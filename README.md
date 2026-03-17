@@ -1,14 +1,13 @@
 # Pod-OS Java Client
 
 High-performance Java client library for the **Pod-OS Actor messaging platform**.
-A faithful port of the [pod-os-go-client](https://github.com/PointOfData/pod-os-go-client),
-targeting Java 17+ with zero external runtime dependencies beyond SLF4J.
+Targeting Java 17+ with zero external runtime dependencies beyond SLF4J.
 
 ---
 
 ## Features
 
-- **Wire-protocol faithful** — Implements the Pod-OS flat byte-stream protocol exactly as the Go reference client.
+- **Wire-protocol faithful** — Implements the Pod-OS flat byte-stream protocol.
 - **High throughput** — Sustains 100K+ messages/second using buffered TCP I/O, `ReentrantLock`-protected sends, and a pipelined concurrent receiver loop.
 - **Concurrent mode** — Background receiver thread routes responses to calling threads via `CompletableFuture` and MessageId correlation, enabling many simultaneous in-flight requests.
 - **Auto-reconnect** — Configurable exponential-backoff reconnection with optional unlimited retries.
@@ -169,7 +168,7 @@ try (PodOsClient client = PodOsClient.newClient(cfg)) {
 | Intent | NeuralMemory Command | Description |
 |---|---|---|
 | `StoreEvent` | `store` | Persist a single event |
-| `StoreData` | `store_data` | Persist raw payload data with a unique identifier, timestamp, and location |
+| `StoreData` | `store_data` | Update raw payload data for an existing Event Obkect with a unique identifier, timestamp, and location |
 | `StoreBatchEvents` | `store_batch` | Persist events in bulk |
 | `StoreBatchTags` | `tag_store_batch` | Persist tags in bulk |
 | `GetEvent` | `get` | Retrieve a single event |
@@ -438,11 +437,32 @@ and error codes are identical. Java idioms are used where appropriate
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+```
+MIT License
+
+Copyright (c) 2024 PointOfData
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ---
 
 ## Contributing
 
-Pull requests are welcome. Please ensure all existing tests pass (`mvn test`) and that
-new code follows the same conventions as the Go reference implementation.
+Pull requests are welcome. Please ensure all existing tests pass (`mvn test`).
