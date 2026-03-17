@@ -1,0 +1,98 @@
+## Pod-OS Communication
+
+All communication with Pod-OS occurs through messages delivered to a Gateway via some sort of connection, usually a socket. The Gateway manages message routing to the Actors hosted by the Gateway. Messages are used to control an Actor, store and retrieve events from Evolutionary Neural Memory (an Actor), and communicate with custom Services hosted by the Actor.
+
+The client software operates as an Actor. Each client connection to a Gateway acts as a separate Actor connection. Client Actors are identified by their ClientName and ActorName which must be the same. Clients may choose to connect to multiple Gateways or manage multiple connections to the same Gateway. In this case, each connection is a separate Actor and connection. Clients are encouraged to implement connection pooling to improve performance. A client connects to a Gateway using a unique ClientName name and all message routing is based on this name. In this way, a client can connect to multiple Actors and send messages to each Actor independently as well as track multiple conversations. Client Actors may have multiple connections to the same Actor, and each connection is a separately-named Actor and connection.
+
+The ID message contains the following information:
+- The name of the client or service connecting to the Actor.
+- The type of connection (socket, REST, etc.).
+- The version of the Pod-OS software being used.
+- The timestamp of the connection.
+- The unique identifier for the connection.
+- The signature of the connection.
+- The private key for the connection.
+
+Messages use one of two states: 1. the Actor is streaming responses for asynchronous message ("STREAM ON"), or 2. synchronous message mode where the Client requests message one at a time from a mailbox queue ("STREAM OFF"). Default state is "STREAM OFF". The Pod-OS Dashboard client (this software) for responsiveness uses STREAM ON by default as you can see from the connection sequence.
+
+Gateway Network. Each Gateway is a self-contained unit that integrates a messaging backbone. Gateways manage Actors which are individual, autonomous computing units. Gateways plus Actors therefore form an amorphous computing platform, consisting of a number of cooperative Actors which may be running on one or more physical devices. Each Actor is completely autonomous and may communicate with any other Actor, so long as the originating Actor has the information and rights necessary to do so (an Actor requesting communication with another Actor may be rebuffed). An Actor reacts to other Actors by examining the content of messages as well as communicating via gateways to the outside world.
+
+The Pod-OS model is concurrent, distributed processing. Each Gateway manages multiple local Actors, each of which runs independently of the Gateway process. Gateways mediate message traffic between multiple native processes. Messages are transferred between tasks using a queued message system, and messages are transferred between Gateways, Actors, and applications using the same message structures. Gateway provisions allow for non-continuously connected Actors to receive messages; messages may be stored in a mailbox which is then transmitted to a process when it makes a connection with the Actor hosting the mailbox. Messages not only carry information, but in keeping with the event-oriented concept design of Pod-OS, each message retains an audit trail recording all Gateways and Actors through which it has passed, and a reply will contain a wormhole route for return path processing. While useful for audit trails or historical analysis, trails can also be used to prevent unwanted closed processing loops in large concurrent systems.
+
+## Java Client Quick Start
+
+```java
+import com.pointofdata.podos.PodOsClient;
+import com.pointofdata.podos.config.Config;
+import com.pointofdata.podos.message.*;
+import java.time.Duration;
+import java.util.UUID;
+
+// 1. Configure
+Config cfg = new Config();
+cfg.host             = "zeroth.pod-os.com";
+cfg.port             = "62312";
+cfg.gatewayActorName = "zeroth.pod-os.com";
+cfg.clientName       = "MyJavaClient";
+cfg.passcode         = "secret";
+cfg.enableConcurrentMode = true;   // pipeline multiple in-flight requests
+cfg.logLevel         = 3;          // INFO
+
+// 2. Connect — performs GatewayId handshake + STREAM ON automatically
+PodOsClient client = PodOsClient.newClient(cfg);
+
+// 3. Send a message and wait for the response
+Message msg = new Message();
+msg.to         = "mem@zeroth.pod-os.com";
+msg.from       = "MyJavaClient@zeroth.pod-os.com";
+msg.intent     = IntentTypes.INSTANCE.StoreEvent;
+msg.clientName = "MyJavaClient";
+msg.messageId  = UUID.randomUUID().toString();
+
+msg.event = new EventFields();
+msg.event.owner             = "$sys";
+msg.event.uniqueId          = UUID.randomUUID().toString();
+msg.event.timestamp         = MessageUtils.getTimestamp();
+msg.event.location          = "TERRA|47.619463|-122.518691";
+msg.event.locationSeparator = "|";
+msg.event.type              = "my-event-type";
+
+msg.payload = new PayloadFields();
+msg.payload.mimeType = "text/plain";
+msg.payload.data     = "Hello Pod-OS";
+
+Message response = client.sendMessage(msg, Duration.ofSeconds(10));
+System.out.println("Status : " + response.processingStatus());
+System.out.println("EventId: " + response.eventId());
+
+// 4. Close when done
+client.close();
+```
+
+## Connection Pool
+
+Use `ConnectionPool` when your application requires many concurrent connections:
+
+```java
+import com.pointofdata.podos.connection.ConnectionClient;
+import com.pointofdata.podos.connection.ConnectionPool;
+import com.pointofdata.podos.config.PoolConfig;
+
+PoolConfig poolCfg = new PoolConfig(10, 3); // max=10, pre-create=3
+ConnectionPool pool = new ConnectionPool(poolCfg, () -> {
+    ConnectionClient c = ConnectionClient.builder()
+        .host("zeroth.pod-os.com")
+        .port("62312")
+        .build();
+    c.connect();
+    return c;
+});
+
+ConnectionClient conn = pool.acquire(Duration.ofSeconds(2));
+try {
+    // use conn
+} finally {
+    pool.release(conn);
+}
+pool.close();
+```

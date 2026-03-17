@@ -424,6 +424,34 @@ cfg.wireHook = new WireHook() {
 
 ---
 
+## Knowledge Base (AI Agent Prompts)
+
+The library ships four embedded markdown documents that provide AI agents, code assistants, and LLM tools with authoritative Pod-OS knowledge at runtime.
+
+| Document name | Content |
+|---|---|
+| `communication` | Gateway network, Actor model, connection lifecycle |
+| `message-handling` | Message structure, streaming modes, wire protocol, concurrent mode |
+| `neural-memory` | Storing events, tags, and links; batch operations; design patterns |
+| `neural-memory-retrieval` | Pattern search, GetEvent, GetEventsForTags, compound searches |
+
+```java
+import com.pointofdata.podos.knowledge.KnowledgeBase;
+
+// List all available documents
+KnowledgeBase.listDocuments().forEach(System.out::println);
+
+// Retrieve a specific document
+String doc = KnowledgeBase.requireDocument(KnowledgeBase.DOC_NEURAL_MEMORY);
+
+// Inject all documents into an LLM context window
+String allContext = KnowledgeBase.allDocuments();
+```
+
+Documents are loaded from the JAR classpath (`knowledge/docs/*.md`) via `Class.getResourceAsStream` — zero network calls, zero external dependencies.
+
+---
+
 ## Relationship to the Go Client
 
 This library is a direct port of
