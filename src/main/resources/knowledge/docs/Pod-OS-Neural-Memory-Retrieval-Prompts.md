@@ -253,6 +253,59 @@ String status    = response.processingStatus();
 int eventCount   = response.response != null ? response.response.eventCount : 0;
 ```
 
+#### Example 3 — Bulk GetEvent by ID
+
+To retrieve multiple events by ID in a single request, use `GetEventsForTags` with a series of OR clauses — one per event. This avoids issuing one `GetEvent` request per event. Each search clause must use `filter_type:eq` for an exact match, and the same tag value pattern is supplied to both `low` and `filter_low`.
+
+Which ID type to use is an either/or decision:
+
+- **By internal EventId**: tag value pattern is `event_id=<event_id>`
+- **By developer UniqueId**: tag value pattern is `\x01u=<unique_id>`. The `\x01` byte prefix (ASCII SOH, `0x01`) is required to avoid collisions with user-defined tag keys.
+
+```java
+// Option A — by internal EventId
+String[] eventIds = {
+    "2024.01.15.14.30.45.123456@actor1|location1|segment1",
+    "2024.01.16.09.00.00.000001@actor1|location1|segment1",
+};
+StringBuilder clauses = new StringBuilder();
+for (String eid : eventIds) {
+    String val = "event_id=" + eid;
+    clauses.append("clause_type:S\tboolean:or\tlow:").append(val)
+           .append("\tfilter_type:eq\tfilter_low:").append(val).append("\n");
+}
+
+// Option B — by developer UniqueId (\x01 prefix avoids tag key collisions)
+String[] uniqueIds = {"uid-001", "uid-002", "uid-003"};
+StringBuilder clauses = new StringBuilder();
+for (String uid : uniqueIds) {
+    String val = "\u0001u=" + uid;
+    clauses.append("clause_type:S\tboolean:or\tlow:").append(val)
+           .append("\tfilter_type:eq\tfilter_low:").append(val).append("\n");
+}
+
+Message msg = new Message();
+msg.to         = "mem@zeroth.example.com";
+msg.from       = "MyJavaClient@zeroth.example.com";
+msg.clientName = "MyJavaClient";
+msg.messageId  = UUID.randomUUID().toString();
+msg.intent     = IntentTypes.INSTANCE.GetEventsForTags;
+
+msg.payload = new PayloadFields();
+msg.payload.mimeType = "text/plain";
+msg.payload.data     = clauses.toString();
+msg.payload.dataType = DataType.RAW;
+
+msg.neuralMemory = new NeuralMemoryFields();
+msg.neuralMemory.getEventsForTags = new GetEventsForTagsOptions();
+msg.neuralMemory.getEventsForTags.bufferResults = true;
+msg.neuralMemory.getEventsForTags.bufferFormat  = "0";
+
+Message response = client.sendMessage(msg, Duration.ofSeconds(30));
+```
+
+Each clause uses `boolean:or` so the result set accumulates one event per ID. The `filter_type:eq` enforces an exact match against the tag value. The response `response.eventCount` and `response.eventResults` will reflect the matched events.
+
 ---
 
 ### GetEvent with Tags (GetTags)

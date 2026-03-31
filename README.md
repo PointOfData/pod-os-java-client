@@ -14,6 +14,8 @@ Targeting Java 17+ with zero external runtime dependencies beyond SLF4J.
 - **Client registry** — Static registry keyed by `clientName:gatewayActorName`, preventing duplicate connections.
 - **Full intent coverage** — All Pod-OS intents supported: Gateway, Event Store, Evolutionary Neural Memory (Get, Store, Batch, Link, Tag).
 - **SLF4J logging** — Drop-in with any SLF4J backend; zero-overhead `NoOpLogger` by default.
+- **Message validation** — Structured, dual-audience (engineer + LLM) validation for all intents. Environment-gated (`PODOS_VALIDATE=1`) for zero cost in production.
+- **AI-assisted remediation** — Optional vLLM integration for AI-powered error diagnosis and corrected code generation.
 - **Zero external runtime deps** — Only `slf4j-api` is required at runtime. Everything else uses the Java standard library.
 
 ---
@@ -424,9 +426,68 @@ cfg.wireHook = new WireHook() {
 
 ---
 
+## Message Validation
+
+Enable structured validation for all intents by setting the `PODOS_VALIDATE` environment variable:
+
+```bash
+export PODOS_VALIDATE=1   # accepts: "1", "true", "yes"
+```
+
+When disabled (default), both `validate()` and `validateRawMessage()` return `null` immediately — a single boolean check with zero allocations on the hot path.
+
+### Pre-Send Struct Validation
+
+```java
+import com.pointofdata.podos.message.MessageValidator;
+import com.pointofdata.podos.message.ValidationErrors;
+
+ValidationErrors errs = MessageValidator.validate(msg);
+if (errs != null && !errs.isEmpty()) {
+    System.err.println(errs.error());    // terminal-friendly engineer format
+    System.err.println(errs.llmJson());  // JSON array for LLM/AI injection
+}
+```
+
+### Wire-Format Validation (Post-Receive)
+
+```java
+ValidationErrors wireErrs = MessageValidator.validateRawMessage(rawBytes);
+if (wireErrs != null && !wireErrs.isEmpty()) {
+    log.error("Malformed wire message: {}", wireErrs.error());
+}
+```
+
+### AI-Assisted Remediation (Optional)
+
+Submit validation errors to a vLLM endpoint (OpenAI-compatible `/v1/chat/completions`) for AI-generated corrected code:
+
+```java
+String explanation = MessageValidator.explainValidationErrors(errs, "http://localhost:8000");
+System.out.println(explanation);
+```
+
+### Validation Coverage
+
+Every validation error includes:
+
+| Field | Description |
+|---|---|
+| `severity` | `"error"` or `"warn"` |
+| `intent` | Intent name (e.g. `"LinkEvent"`) |
+| `field` | Java struct dot-path (e.g. `"NeuralMemory.Link.Category"`) |
+| `wireField` | Wire protocol key (e.g. `"category"`) |
+| `rule` | `required`, `one_of_required`, `format`, `nil_struct`, `header_missing`, `header_value`, `payload_type`, `payload_format`, `uncovered` |
+| `message` | Human-readable description |
+| `fix` | Concrete remediation step |
+| `exampleCode` | Minimal Java snippet showing correct usage |
+| `references` | Source file locations |
+
+---
+
 ## Knowledge Base (AI Agent Prompts)
 
-The library ships four embedded markdown documents that provide AI agents, code assistants, and LLM tools with authoritative Pod-OS knowledge at runtime.
+The library ships five embedded markdown documents that provide AI agents, code assistants, and LLM tools with authoritative Pod-OS knowledge at runtime — mirroring the `knowledge/` package in the Go client.
 
 | Document name | Content |
 |---|---|
@@ -434,6 +495,7 @@ The library ships four embedded markdown documents that provide AI agents, code 
 | `message-handling` | Message structure, streaming modes, wire protocol, concurrent mode |
 | `neural-memory` | Storing events, tags, and links; batch operations; design patterns |
 | `neural-memory-retrieval` | Pattern search, GetEvent, GetEventsForTags, compound searches |
+| `intent-field-validation` | Per-intent required fields, validation rules, wire protocol checks |
 
 ```java
 import com.pointofdata.podos.knowledge.KnowledgeBase;
@@ -443,6 +505,9 @@ KnowledgeBase.listDocuments().forEach(System.out::println);
 
 // Retrieve a specific document
 String doc = KnowledgeBase.requireDocument(KnowledgeBase.DOC_NEURAL_MEMORY);
+
+// Retrieve the validation spec
+String validationSpec = KnowledgeBase.requireDocument(KnowledgeBase.DOC_INTENT_FIELD_VALIDATION);
 
 // Inject all documents into an LLM context window
 String allContext = KnowledgeBase.allDocuments();

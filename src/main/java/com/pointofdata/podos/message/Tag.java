@@ -24,6 +24,10 @@ public class Tag {
     public String timestamp = "";
     /** Tag's Event Object ID. */
     public String id = "";
+    /** Tag owner Event Object ID. */
+    public String owner = "";
+    /** Tag owner unique identifier. */
+    public String ownerUniqueId = "";
 
     public Tag() {}
 

@@ -48,11 +48,15 @@ public final class KnowledgeBase {
     /** Evolutionary Neural Memory retrieval: GetEvent, GetEventsForTags, pattern search. */
     public static final String DOC_NEURAL_MEMORY_RETRIEVAL = "neural-memory-retrieval";
 
+    /** Intent field validation rules, per-intent required fields, wire protocol checks. */
+    public static final String DOC_INTENT_FIELD_VALIDATION = "intent-field-validation";
+
     private static final List<String> ALL_DOCUMENTS = Collections.unmodifiableList(Arrays.asList(
             DOC_COMMUNICATION,
             DOC_MESSAGE_HANDLING,
             DOC_NEURAL_MEMORY,
-            DOC_NEURAL_MEMORY_RETRIEVAL
+            DOC_NEURAL_MEMORY_RETRIEVAL,
+            DOC_INTENT_FIELD_VALIDATION
     ));
 
     private static final String RESOURCE_BASE = "/knowledge/docs/";
@@ -62,6 +66,7 @@ public final class KnowledgeBase {
         { DOC_MESSAGE_HANDLING,         "Pod-OS-Message-Handling-Prompts.md"        },
         { DOC_NEURAL_MEMORY,            "Pod-OS-Neural-Memory-Event-Prompts.md"     },
         { DOC_NEURAL_MEMORY_RETRIEVAL,  "Pod-OS-Neural-Memory-Retrieval-Prompts.md" },
+        { DOC_INTENT_FIELD_VALIDATION,  "Pod-OS-Intent-Field-Validation.md"         },
     };
 
     private KnowledgeBase() {}

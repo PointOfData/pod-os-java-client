@@ -82,4 +82,20 @@ public class Message extends Envelope {
     public LinkFields link() {
         return (neuralMemory != null) ? neuralMemory.link : null;
     }
+
+    // -------------------------------------------------------------------------
+    // Validation
+    // -------------------------------------------------------------------------
+
+    /**
+     * Validates this message before encoding.
+     * Returns {@code null} if validation is disabled (PODOS_VALIDATE env var).
+     * Otherwise returns all violations at once.
+     *
+     * @return validation errors, or {@code null} if validation is disabled
+     * @see MessageValidator#validate(Message)
+     */
+    public ValidationErrors validate() {
+        return MessageValidator.validate(this);
+    }
 }
