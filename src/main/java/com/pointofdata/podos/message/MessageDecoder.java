@@ -379,6 +379,10 @@ public final class MessageDecoder {
                 if (!lk.eventB.isEmpty()) {
                     lk.targetTags = targetTagsMap.getOrDefault(lk.eventB, new ArrayList<>());
                 }
+                // Populate uniqueIdA from parent event's uniqueId (links are stored on the source event)
+                if (lk.uniqueIdA.isEmpty() && msg.event != null && !msg.event.uniqueId.isEmpty()) {
+                    lk.uniqueIdA = msg.event.uniqueId;
+                }
                 links.add(lk);
             }
         }
@@ -524,6 +528,10 @@ public final class MessageDecoder {
                 lk.tags = linkTagsMap.getOrDefault(linkId, new ArrayList<>());
                 if (!lk.eventB.isEmpty()) {
                     lk.targetTags = targetTagsMap.getOrDefault(lk.eventB, new ArrayList<>());
+                }
+                // Populate uniqueIdA from parent event's uniqueId (links are stored on the source event)
+                if (lk.uniqueIdA.isEmpty() && !event.uniqueId.isEmpty()) {
+                    lk.uniqueIdA = event.uniqueId;
                 }
                 links.add(lk);
             }
