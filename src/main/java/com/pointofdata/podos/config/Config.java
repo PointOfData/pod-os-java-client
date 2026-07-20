@@ -99,12 +99,60 @@ public class Config {
     /** Response timeout for concurrent mode. Default: 30 seconds. */
     public Duration responseTimeout = Duration.ofSeconds(30);
 
+    /**
+     * Invoked for inbound messages that do not match a pending outbound request when
+     * {@link #enableConcurrentMode} is true. Wired before {@code startReceiver} in
+     * {@link com.pointofdata.podos.PodOsClient#newClient(Config)}.
+     */
+    public java.util.function.Consumer<com.pointofdata.podos.message.Message> unmatchedMessageHandler = null;
+
     // -------------------------------------------------------------------------
     // Reconnection
     // -------------------------------------------------------------------------
 
     /** Automatic reconnection configuration. */
     public ReconnectConfig reconnectConfig = new ReconnectConfig();
+
+    /**
+     * App-level AIP Keepalive interval. When unset (null), defaults to 30 seconds.
+     * Zero disables keepalive. Negative values disable keepalive.
+     */
+    public Duration keepaliveInterval = null;
+
+    /**
+     * When true, prevents storing this client in the global clientRegistry/actorRegistry.
+     * Used by warm-pool standby connections so they do not clobber the canonical primary
+     * client for the same gateway FQN.
+     */
+    public boolean skipGlobalRegistry = false;
+
+    /**
+     * Bounds each background receive iteration in concurrent mode.
+     * When unset (null or zero), defaults to 30 seconds.
+     */
+    public Duration receiveLoopTimeout = null;
+
+    /**
+     * Liveness backstop: if requests are pending but no frame has been received for
+     * this long, the connection is declared dead. When unset (null or zero), defaults
+     * to 90 seconds.
+     */
+    public Duration connectionLivenessTimeout = null;
+
+    /** TCP keepalive idle time. When unset (null or zero), uses connection-layer default (15s). */
+    public Duration tcpKeepAliveIdle = null;
+
+    /** TCP keepalive probe interval. When unset (null or zero), uses default (5s). */
+    public Duration tcpKeepAliveInterval = null;
+
+    /** TCP keepalive probe count before declaring dead. When zero, uses default (3). */
+    public int tcpKeepAliveCount = 0;
+
+    /**
+     * TCP user timeout (Linux TCP_USER_TIMEOUT). When unset (null or zero), uses default (60s).
+     * Not supported on all platforms; ignored where unavailable.
+     */
+    public Duration tcpUserTimeout = null;
 
     // -------------------------------------------------------------------------
     // Logging
@@ -136,6 +184,46 @@ public class Config {
      * Set to null (default) for zero overhead. Implementations must be thread-safe.
      */
     public WireHook wireHook = null;
+
+    /** Default app-level AIP Keepalive period. */
+    public static final Duration DEFAULT_KEEPALIVE_INTERVAL = Duration.ofSeconds(30);
+
+    /** Default per-iteration receive timeout in concurrent mode. */
+    public static final Duration DEFAULT_RECEIVE_LOOP_TIMEOUT = Duration.ofSeconds(30);
+
+    /** Default pending-request liveness backstop. */
+    public static final Duration DEFAULT_CONNECTION_LIVENESS_TIMEOUT = Duration.ofSeconds(90);
+
+    /**
+     * Returns the configured keepalive interval, or the default when unset.
+     * Returns {@link Duration#ZERO} when keepalive is explicitly disabled.
+     */
+    public Duration getKeepaliveInterval() {
+        if (keepaliveInterval != null) {
+            if (keepaliveInterval.isNegative() || keepaliveInterval.isZero()) {
+                return Duration.ZERO;
+            }
+            return keepaliveInterval;
+        }
+        return DEFAULT_KEEPALIVE_INTERVAL;
+    }
+
+    /** Returns the configured receive-loop timeout or the default. */
+    public Duration getReceiveLoopTimeout() {
+        if (receiveLoopTimeout == null || receiveLoopTimeout.isZero() || receiveLoopTimeout.isNegative()) {
+            return DEFAULT_RECEIVE_LOOP_TIMEOUT;
+        }
+        return receiveLoopTimeout;
+    }
+
+    /** Returns the configured liveness backstop or the default. */
+    public Duration getConnectionLivenessTimeout() {
+        if (connectionLivenessTimeout == null || connectionLivenessTimeout.isZero()
+                || connectionLivenessTimeout.isNegative()) {
+            return DEFAULT_CONNECTION_LIVENESS_TIMEOUT;
+        }
+        return connectionLivenessTimeout;
+    }
 
     public Config() {}
 }

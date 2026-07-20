@@ -66,6 +66,7 @@ public final class MessageValidator {
     static {
         Map<String, Function<Message, List<ValidationError>>> m = new HashMap<>(32);
         m.put("StoreEvent",        MessageValidator::validateStoreEvent);
+        m.put("StoreData",         MessageValidator::validateStoreData);
         m.put("StoreEventResponse",       MessageValidator::validateStoreEventResponse);
         m.put("StoreBatchEvents",  MessageValidator::validateStoreBatchEvents);
         m.put("StoreBatchEventsResponse",  MessageValidator::validateStoreBatchEventsResponse);
@@ -401,10 +402,11 @@ public final class MessageValidator {
         if (isEmpty(ev.owner) && isEmpty(ev.ownerUniqueId)) {
             errs.add(err(intent, "Event.Owner / Event.OwnerUniqueID", "owner / owner_unique_id", RULE_ONE_OF_REQUIRED,
                     "Either Event.owner or Event.ownerUniqueId is required.",
-                    "Set msg.event.owner (e.g. \"$sys\") or msg.event.ownerUniqueId.",
+                    "Set msg.event.owner or msg.event.ownerUniqueId to identify the entity that created this event. " + GUIDANCE_OWNER_CREATE,
                     "msg.event.owner = \"$sys\"",
                     "message/EventFields.java:owner", "message/EventFields.java:ownerUniqueId"));
         }
+        errs.addAll(validateCreateEventIdSet(intent, "Event.Id", ev.id));
         if (isEmpty(ev.location)) {
             errs.add(err(intent, "Event.Location", "loc", RULE_REQUIRED,
                     "Event location is required.",
@@ -424,6 +426,32 @@ public final class MessageValidator {
 
     private static List<ValidationError> validateStoreEventResponse(Message msg) {
         return validateResponseCommon(msg, "StoreEventResponse");
+    }
+
+    private static List<ValidationError> validateStoreData(Message msg) {
+        List<ValidationError> errs = new ArrayList<>();
+        String intent = "StoreData";
+        EventFields ev = msg.event;
+        if (ev == null) {
+            errs.add(nilStruct(intent, "Event", "Initialize msg.event with the target event's id/uniqueId and owner"));
+            return errs;
+        }
+        if (isEmpty(ev.id) && isEmpty(ev.uniqueId)) {
+            errs.add(err(intent, "Event.Id / Event.UniqueId", "event_id / unique_id", RULE_ONE_OF_REQUIRED,
+                    "Either Event.id or Event.uniqueId is required to identify the target event.",
+                    "Set msg.event.id or msg.event.uniqueId to the pre-existing target event. " + GUIDANCE_ID_APPLY,
+                    "msg.event.uniqueId = \"my-event-uid\"",
+                    "message/EventFields.java:id", "message/HeaderBuilder.java:storeDataMessageHeader"));
+        }
+        if (isEmpty(ev.owner) && isEmpty(ev.ownerUniqueId)) {
+            errs.add(err(intent, "Event.Owner / Event.OwnerUniqueID", "owner / owner_unique_id", RULE_ONE_OF_REQUIRED,
+                    "Either Event.owner or Event.ownerUniqueId is required.",
+                    "Set msg.event.owner or msg.event.ownerUniqueId to the creating entity (may differ from the target Id). " + GUIDANCE_OWNER_APPLY,
+                    "msg.event.ownerUniqueId = \"user-001\"",
+                    "message/EventFields.java:owner", "message/HeaderBuilder.java:storeDataMessageHeader"));
+        }
+        errs.addAll(validateApplyToExistingSemantics(intent, ev));
+        return errs;
     }
 
     private static List<ValidationError> validateStoreBatchEvents(Message msg) {
@@ -472,17 +500,18 @@ public final class MessageValidator {
             if (isEmpty(ev.id) && isEmpty(ev.uniqueId)) {
                 errs.add(err(intent, "Event.Id / Event.UniqueId", "event_id / unique_id", RULE_ONE_OF_REQUIRED,
                         "Either Event.id or Event.uniqueId is required to identify the target event.",
-                        "Set msg.event.id or msg.event.uniqueId.",
-                        "msg.event.id = existingEventId",
-                        "message/EventFields.java:id", "message/EventFields.java:uniqueId"));
+                        "Set msg.event.id or msg.event.uniqueId to the pre-existing target event. " + GUIDANCE_ID_APPLY,
+                        "msg.event.uniqueId = \"my-event-uid\"",
+                        "message/EventFields.java:id", "message/HeaderBuilder.java:storeBatchTagsMessageHeader"));
             }
             if (isEmpty(ev.owner) && isEmpty(ev.ownerUniqueId)) {
                 errs.add(err(intent, "Event.Owner / Event.OwnerUniqueID", "owner / owner_unique_id", RULE_ONE_OF_REQUIRED,
                         "Either Event.owner or Event.ownerUniqueId is required.",
-                        "Set msg.event.owner (e.g. \"$sys\") or msg.event.ownerUniqueId.",
-                        "msg.event.owner = ownerEventId",
-                        "message/EventFields.java:owner", "message/EventFields.java:ownerUniqueId"));
+                        "Set msg.event.owner or msg.event.ownerUniqueId to the creating entity (may differ from the target Id). " + GUIDANCE_OWNER_APPLY,
+                        "msg.event.ownerUniqueId = \"user-001\"",
+                        "message/EventFields.java:owner", "message/HeaderBuilder.java:storeBatchTagsMessageHeader"));
             }
+            errs.addAll(validateApplyToExistingSemantics(intent, ev));
         }
 
         List<Tag> tags = msg.tags();
@@ -533,10 +562,11 @@ public final class MessageValidator {
         if (isEmpty(ev.id) && isEmpty(ev.uniqueId)) {
             errs.add(err(intent, "Event.Id / Event.UniqueId", "event_id / unique_id", RULE_ONE_OF_REQUIRED,
                     "Either Event.id or Event.uniqueId is required to identify the event to retrieve.",
-                    "Set msg.event.id or msg.event.uniqueId.",
+                    "Set msg.event.id or msg.event.uniqueId. " + GUIDANCE_ID_LOOKUP,
                     "msg.event.id = existingEventId",
-                    "message/EventFields.java:id", "message/EventFields.java:uniqueId"));
+                    "message/EventFields.java:id", "message/HeaderBuilder.java:getEventMessageHeader"));
         }
+        errs.addAll(validateLookupOwnerNotUsedEvent(intent, ev));
         return errs;
     }
 
@@ -604,10 +634,11 @@ public final class MessageValidator {
             errs.add(err(intent, "NeuralMemory.Link.OwnerId / OwnerUniqueID",
                     "owner_event_id / owner_unique_id", RULE_ONE_OF_REQUIRED,
                     "Either Link.ownerId or Link.ownerUniqueId is required.",
-                    "Set msg.neuralMemory.link.ownerId or msg.neuralMemory.link.ownerUniqueId.",
+                    "Set msg.neuralMemory.link.ownerId or msg.neuralMemory.link.ownerUniqueId to the entity that created the link event. " + GUIDANCE_OWNER_CREATE,
                     "msg.neuralMemory.link.ownerId = ownerEventId",
                     "message/LinkFields.java:ownerId", "message/LinkFields.java:ownerUniqueId"));
         }
+        errs.addAll(validateCreateLinkIdSet(intent, "NeuralMemory.Link.Id", lk.id));
         if (isEmpty(lk.location)) {
             errs.add(err(intent, "NeuralMemory.Link.Location", "loc", RULE_REQUIRED,
                     "Location is required for LinkEvent.",
@@ -643,10 +674,11 @@ public final class MessageValidator {
             errs.add(err(intent, "NeuralMemory.Link.Id / NeuralMemory.Link.UniqueId",
                     "event_id / unique_id", RULE_ONE_OF_REQUIRED,
                     "Either Link.id or Link.uniqueId is required to identify the link event to remove.",
-                    "Set msg.neuralMemory.link.id or msg.neuralMemory.link.uniqueId.",
+                    "Set msg.neuralMemory.link.id or msg.neuralMemory.link.uniqueId. " + GUIDANCE_ID_LOOKUP,
                     "msg.neuralMemory.link.id = linkEventId",
-                    "message/LinkFields.java:id", "message/LinkFields.java:uniqueId"));
+                    "message/LinkFields.java:id", "message/HeaderBuilder.java:unlinkEventsMessageHeader"));
         }
+        errs.addAll(validateLookupOwnerNotUsedLink(intent, lk));
         return errs;
     }
 
@@ -780,10 +812,11 @@ public final class MessageValidator {
         if (isEmpty(ev.owner) && isEmpty(ev.ownerUniqueId)) {
             errs.add(err(intent, prefix + ".Event.Owner / OwnerUniqueID", "owner / owner_unique_id", RULE_PAYLOAD_FORMAT,
                     "Either owner or ownerUniqueId is required for each batch event record.",
-                    "Set spec.event.owner = \"$sys\" or spec.event.ownerUniqueId.",
+                    "Set spec.event.owner or spec.event.ownerUniqueId. " + GUIDANCE_OWNER_CREATE,
                     "spec.event.owner = \"$sys\"",
                     "message/EventFields.java:owner"));
         }
+        errs.addAll(validateCreateEventIdSet(intent, prefix + ".Event.Id", ev.id));
         if (isEmpty(ev.location)) {
             errs.add(err(intent, prefix + ".Event.Location", "loc", RULE_PAYLOAD_FORMAT,
                     "Location is required for each batch event record.",
@@ -822,10 +855,11 @@ public final class MessageValidator {
             if (isEmpty(ev.owner) && isEmpty(ev.ownerUniqueId)) {
                 errs.add(err(intent, prefix + ".Event.Owner / OwnerUniqueID", "owner / owner_unique_id", RULE_PAYLOAD_FORMAT,
                         "Either owner or ownerUniqueId is required.",
-                        "Set spec.event.owner = \"$sys\".",
+                        "Set spec.event.owner or spec.event.ownerUniqueId. " + GUIDANCE_OWNER_CREATE,
                         "spec.event.owner = \"$sys\"",
                         "message/EventFields.java:owner"));
             }
+            errs.addAll(validateCreateEventIdSet(intent, prefix + ".Event.Id", ev.id));
         }
 
         LinkFields lk = spec.link;
@@ -864,10 +898,11 @@ public final class MessageValidator {
             errs.add(err(intent, prefix + ".Link.OwnerId / OwnerUniqueID",
                     "owner_event_id / owner_unique_id", RULE_PAYLOAD_FORMAT,
                     "Either Link.ownerId or Link.ownerUniqueId is required.",
-                    "Set spec.link.ownerId or spec.link.ownerUniqueId.",
+                    "Set spec.link.ownerId or spec.link.ownerUniqueId. " + GUIDANCE_OWNER_CREATE,
                     "spec.link.ownerId = ownerEventId",
                     "message/LinkFields.java:ownerId", "message/LinkFields.java:ownerUniqueId"));
         }
+        errs.addAll(validateCreateLinkIdSet(intent, prefix + ".Link.Id", lk.id));
         return errs;
     }
 
@@ -931,6 +966,38 @@ public final class MessageValidator {
             case "tag_store_batch":
                 requireWireFieldOneOf(errs, intent, hm, "unique_id", "event_id");
                 requireWireFieldOneOf(errs, intent, hm, "owner", "owner_unique_id");
+                if (SYS_SPECIAL_ID.equals(hm.get("owner"))) {
+                    errs.add(semanticErr("StoreBatchTags", "Event.Owner", "owner",
+                            "StoreBatchTags owner must not be $sys; owner must be a pre-existing individual event Id.",
+                            "Set Event.owner to the internal Event.id of the creating entity.",
+                            "msg.event.owner = \"2024.01.15...\"",
+                            "message/HeaderBuilder.java:storeBatchTagsMessageHeader"));
+                }
+                if (SYS_SPECIAL_ID.equals(hm.get("event_id")) || SYS_SPECIAL_ID.equals(hm.get("unique_id"))) {
+                    errs.add(semanticErr("StoreBatchTags", "Event.Id / Event.UniqueId", "event_id / unique_id",
+                            "StoreBatchTags target Id must not be $sys; $sys is not an individual event.",
+                            "Set Event.id or Event.uniqueId to the pre-existing target event.",
+                            "msg.event.uniqueId = \"my-event-uid\"",
+                            "message/HeaderBuilder.java:storeBatchTagsMessageHeader"));
+                }
+                break;
+            case "store_data":
+                requireWireFieldOneOf(errs, intent, hm, "unique_id", "event_id");
+                requireWireFieldOneOf(errs, intent, hm, "owner", "owner_unique_id");
+                if (SYS_SPECIAL_ID.equals(hm.get("owner"))) {
+                    errs.add(semanticErr("StoreData", "Event.Owner", "owner",
+                            "StoreData owner must not be $sys; owner must be a pre-existing individual event Id.",
+                            "Set Event.owner to the internal Event.id of the creating entity.",
+                            "msg.event.owner = \"2024.01.15...\"",
+                            "message/HeaderBuilder.java:storeDataMessageHeader"));
+                }
+                if (SYS_SPECIAL_ID.equals(hm.get("event_id")) || SYS_SPECIAL_ID.equals(hm.get("unique_id"))) {
+                    errs.add(semanticErr("StoreData", "Event.Id / Event.UniqueId", "event_id / unique_id",
+                            "StoreData target Id must not be $sys; $sys is not an individual event.",
+                            "Set Event.id or Event.uniqueId to the pre-existing target event.",
+                            "msg.event.uniqueId = \"my-event-uid\"",
+                            "message/HeaderBuilder.java:storeDataMessageHeader"));
+                }
                 break;
             case "get":
                 requireWireFieldOneOf(errs, intent, hm, "event_id", "unique_id");
@@ -1015,6 +1082,118 @@ public final class MessageValidator {
 
     private static boolean isEmpty(String s) {
         return s == null || s.isEmpty();
+    }
+
+    private static final String SYS_SPECIAL_ID = "$sys";
+
+    private static final String GUIDANCE_OWNER_CREATE =
+            "Owner is the entity that created the event: Event.owner must be a pre-existing internal Event.id in this database or $sys; Event.ownerUniqueId must be a pre-existing Event.uniqueId.";
+    private static final String GUIDANCE_OWNER_APPLY =
+            "Owner is the creating entity (may differ from the target Id): Event.owner must be a pre-existing internal Event.id in this database (not $sys); Event.ownerUniqueId must be a pre-existing Event.uniqueId.";
+    private static final String GUIDANCE_ID_APPLY =
+            "Event.id or Event.uniqueId identifies the pre-existing target event in this database to which tags or payload are applied ($sys is not an individual event).";
+    private static final String GUIDANCE_ID_LOOKUP =
+            "Event.id must be a pre-existing internal Event.id or $sys; Event.uniqueId must be a pre-existing Event.uniqueId in this database.";
+    private static final String GUIDANCE_ID_CREATE =
+            "Event.id is AIP-generated at storage time (time+location); set Event.uniqueId for a developer-controlled identifier known before storage.";
+    private static final String GUIDANCE_LINK_ID_CREATE =
+            "NeuralMemory.Link.id is AIP-generated at storage time; set NeuralMemory.Link.uniqueId for a developer-controlled link identifier.";
+
+    private static boolean isSysId(String s) {
+        return SYS_SPECIAL_ID.equals(s);
+    }
+
+    private static List<ValidationError> validateApplyToExistingSemantics(String intent, EventFields ev) {
+        List<ValidationError> errs = new ArrayList<>();
+        if (ev == null) return errs;
+        if (isSysId(ev.owner)) {
+            errs.add(semanticErr(intent, "Event.Owner", "owner",
+                    "Event.owner must not be $sys for " + intent + "; owner must be a pre-existing individual event Id in this database.",
+                    "Set Event.owner to the internal Event.id of the entity that owns/creates the tags or payload.",
+                    "msg.event.owner = \"2024.01.15...\"",
+                    "message/EventFields.java:owner"));
+        }
+        if (isSysId(ev.id)) {
+            errs.add(semanticErr(intent, "Event.Id", "event_id",
+                    "Event.id must not be $sys for " + intent + "; $sys is not an individual event.",
+                    "Set Event.id to the internal Event.id of the pre-existing target event.",
+                    "msg.event.id = \"2024.01.15...\"",
+                    "message/EventFields.java:id"));
+        }
+        if (isSysId(ev.uniqueId)) {
+            errs.add(semanticErr(intent, "Event.UniqueId", "unique_id",
+                    "Event.uniqueId must not be $sys for " + intent + "; $sys is not an individual event.",
+                    "Set Event.uniqueId to the UniqueId of the pre-existing target event.",
+                    "msg.event.uniqueId = \"my-event-uid\"",
+                    "message/EventFields.java:uniqueId"));
+        }
+        return errs;
+    }
+
+    private static List<ValidationError> validateLookupOwnerNotUsedEvent(String intent, EventFields ev) {
+        List<ValidationError> errs = new ArrayList<>();
+        if (ev == null) return errs;
+        if (!isEmpty(ev.owner) || !isEmpty(ev.ownerUniqueId)) {
+            errs.add(semanticWarn(intent, "Event.Owner / Event.OwnerUniqueID", "owner / owner_unique_id",
+                    "Owner fields are not used for " + intent + "; only Event.id or Event.uniqueId identify the event.",
+                    "Remove Event.owner and Event.ownerUniqueId; set Event.id or Event.uniqueId instead.",
+                    "msg.event = new EventFields(); msg.event.id = \"2024.01.15...\"",
+                    "message/EventFields.java:owner", "message/HeaderBuilder.java:getEventMessageHeader"));
+        }
+        return errs;
+    }
+
+    private static List<ValidationError> validateLookupOwnerNotUsedLink(String intent, LinkFields lk) {
+        List<ValidationError> errs = new ArrayList<>();
+        if (lk == null) return errs;
+        if (!isEmpty(lk.owner) || !isEmpty(lk.ownerId) || !isEmpty(lk.ownerUniqueId)) {
+            errs.add(semanticWarn(intent, "NeuralMemory.Link.Owner / OwnerId / OwnerUniqueID",
+                    "owner / owner_event_id / owner_unique_id",
+                    "Owner fields are not used for " + intent + "; only NeuralMemory.Link.id or NeuralMemory.Link.uniqueId identify the link event.",
+                    "Remove owner fields; set NeuralMemory.Link.id or NeuralMemory.Link.uniqueId.",
+                    "msg.neuralMemory.link = new LinkFields(); msg.neuralMemory.link.id = \"link-event-id\"",
+                    "message/LinkFields.java", "message/HeaderBuilder.java:unlinkEventsMessageHeader"));
+        }
+        return errs;
+    }
+
+    private static List<ValidationError> validateCreateEventIdSet(String intent, String field, String idValue) {
+        List<ValidationError> errs = new ArrayList<>();
+        if (isEmpty(idValue)) return errs;
+        errs.add(semanticWarn(intent, field, "event_id",
+                field + " is set for " + intent + " but Event.id is AIP-generated at storage time (time+location).",
+                GUIDANCE_ID_CREATE,
+                "msg.event.uniqueId = \"my-event-uid\"",
+                "message/EventFields.java:id", "message/EventFields.java:uniqueId"));
+        return errs;
+    }
+
+    private static List<ValidationError> validateCreateLinkIdSet(String intent, String field, String idValue) {
+        List<ValidationError> errs = new ArrayList<>();
+        if (isEmpty(idValue)) return errs;
+        errs.add(semanticWarn(intent, field, "event_id",
+                field + " is set for " + intent + " but link Event.id is AIP-generated at storage time.",
+                GUIDANCE_LINK_ID_CREATE,
+                "msg.neuralMemory.link.uniqueId = \"my-link-uid\"",
+                "message/LinkFields.java:id", "message/LinkFields.java:uniqueId"));
+        return errs;
+    }
+
+    private static ValidationError semanticErr(String intent, String field, String wireField,
+                                                String message, String fix, String exampleCode, String... refs) {
+        return err(intent, field, wireField, RULE_SEMANTIC, message, fix, exampleCode, refs);
+    }
+
+    private static ValidationError semanticWarn(String intent, String field, String wireField,
+                                                 String message, String fix, String exampleCode, String... refs) {
+        return warn(intent, field, wireField, RULE_SEMANTIC, message, fix, exampleCode, refs);
+    }
+
+    private static ValidationError lengthFieldErr(String fieldName, int offset) {
+        return err("RawMessage", fieldName, "", RULE_FORMAT,
+                "Failed to decode length field at offset " + offset + ".",
+                "Ensure the wire message has a valid 9-digit length field for " + fieldName + ".",
+                "", "message/MessageDecoder.java:decodeLengthField");
     }
 
     private static ValidationError err(String intent, String field, String wireField, String rule,

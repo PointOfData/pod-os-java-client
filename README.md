@@ -117,6 +117,8 @@ try (PodOsClient client = PodOsClient.newClient(cfg)) {
 }
 ```
 
+On explicit close, the client sends a fire-and-forget AIP `GatewayDisconnect` frame (message_type 6) on the ID-authenticated primary connection, then closes the TCP socket. Unexpected connection loss and reconnect teardown do not send Disconnect. Unauthenticated pool sockets are closed without Disconnect because they never completed a GatewayId handshake.
+
 ---
 
 ## Configuration Reference
@@ -141,6 +143,64 @@ try (PodOsClient client = PodOsClient.newClient(cfg)) {
 | `retryConfig` | `RetryConfig` | defaults | Connection attempt retry settings |
 | `poolConfig` | `PoolConfig` | defaults | Connection pool settings |
 | `reconnectConfig` | `ReconnectConfig` | defaults | Auto-reconnection settings |
+| `keepaliveInterval` | `Duration` | `30s` | App-level AIP Keepalive period; `Duration.ZERO` disables |
+
+### App-Level Keepalive
+
+The client sends periodic AIP `Keepalive` frames (message_type 18) on the primary connection and idle pooled connections. Set `keepaliveInterval` to `Duration.ZERO` to disable. The loop starts after GatewayId/StreamOn, pauses during reconnect, and stops on `close()`.
+
+### Actor Health Checks (Non-Neural Memory Actors)
+
+Neural Memory Actors are typically probed with store/get intents. **Socket Actors** (custom gateway-connected services that do not expose NeuralMemory) use the lightweight AIP `StatusRequest` / `Status` pair instead:
+
+| Intent | message_type | Role |
+|---|---|---|
+| `StatusRequest` | 110 | Inbound health probe (envelope + optional `_msg_id`) |
+| `Status` | 3 | Health reply (`_status`, `_msg`, echoed `_msg_id`) |
+
+Both intents are envelope-only — no NeuralMemory fields or payload are required.
+
+#### Responding to probes (Actor side)
+
+An Actor that holds a long-lived gateway socket must enable concurrent mode so inbound probes can arrive while outbound work is in flight. Call `Health.respondToHealthChecks` immediately after `PodOsClient.newClient`:
+
+```java
+Config cfg = new Config();
+cfg.host = "gateway-lb.example.com";
+cfg.port = "62312";
+cfg.gatewayActorName = "zeroth.pod-os.com";
+cfg.clientName = "my-socket-actor";
+cfg.enableConcurrentMode = true;
+
+PodOsClient client = PodOsClient.newClient(cfg);
+Health.respondToHealthChecks(client);
+```
+
+`respondToHealthChecks` registers an unmatched-message handler on the background receiver. When a `StatusRequest` arrives that does not correlate to an outbound request, the client replies with a `Status` message via `sendControlMessage` (fire-and-forget).
+
+For custom reply logic, call `Health.buildStatusHealthReply` directly and send the encoded frame yourself.
+
+#### Sending probes (monitor side)
+
+Send a `StatusRequest` with a unique `messageId` and wait for the correlated `Status` response:
+
+```java
+String probeId = UUID.randomUUID().toString();
+Message probe = new Message();
+probe.to = "my-socket-actor@zeroth.pod-os.com";
+probe.from = client.getClientName() + "@" + client.getGatewayActorName();
+probe.intent = IntentTypes.INSTANCE.StatusRequest;
+probe.clientName = client.getClientName();
+probe.messageId = probeId;
+
+Message resp = client.sendMessage(probe, Duration.ofSeconds(30));
+if (!"OK".equals(resp.processingStatus())) {
+    throw new RuntimeException("unhealthy: " + resp.processingMessage());
+}
+if (!probeId.equals(resp.messageId)) {
+    throw new RuntimeException("correlation mismatch");
+}
+```
 
 ### RetryConfig
 

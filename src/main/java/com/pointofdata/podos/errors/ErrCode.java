@@ -55,5 +55,10 @@ public enum ErrCode {
     LOAD_BALANCER_STRATEGY_NOT_FOUND,
     NO_PROXIES_AVAILABLE,
     NO_LOAD_BALANCER_RULES,
-    RETRIES_EXHAUSTED
+    RETRIES_EXHAUSTED,
+    /** Fatal, unrecoverable-on-this-socket condition (hard I/O error, mid-frame
+     *  read timeout, or framing desync). The caller should reconnect/retry. */
+    CONNECTION_LOST,
+    /** Benign idle read timeout: no frame bytes were pending, connection healthy. */
+    RECEIVE_IDLE_TIMEOUT
 }

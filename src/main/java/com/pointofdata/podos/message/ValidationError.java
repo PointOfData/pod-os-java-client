@@ -27,6 +27,7 @@ public final class ValidationError {
     public static final String RULE_HEADER_VALUE     = "header_value";
     public static final String RULE_PAYLOAD_TYPE     = "payload_type";
     public static final String RULE_PAYLOAD_FORMAT   = "payload_format";
+    public static final String RULE_SEMANTIC         = "semantic";
     public static final String RULE_UNCOVERED        = "uncovered";
 
     private final String severity;

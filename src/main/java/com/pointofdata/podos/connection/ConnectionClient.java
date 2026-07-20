@@ -58,7 +58,10 @@ public class ConnectionClient {
     private int sendTimeoutMs;
     private int receiveTimeoutMs;
     private int dialTimeoutMs;
-    private boolean tcpKeepAlive = false;
+    private boolean tcpKeepAlive = true;
+    private int tcpKeepAliveIdleSecs     = KEEPALIVE_IDLE_SECS;
+    private int tcpKeepAliveIntervalSecs = KEEPALIVE_INTERVAL_SECS;
+    private int tcpKeepAliveProbeCount   = KEEPALIVE_PROBE_COUNT;
 
     private final Retry retry;
     private final PodOsLogger logger;
@@ -80,6 +83,16 @@ public class ConnectionClient {
         this.retry             = b.retry != null ? b.retry : new Retry();
         this.logger            = b.logger != null ? b.logger : NoOpLogger.INSTANCE;
         this.wireHook          = b.wireHook;
+        if (b.tcpKeepAliveIdle != null && !b.tcpKeepAliveIdle.isZero() && !b.tcpKeepAliveIdle.isNegative()) {
+            this.tcpKeepAliveIdleSecs = (int) b.tcpKeepAliveIdle.getSeconds();
+        }
+        if (b.tcpKeepAliveInterval != null && !b.tcpKeepAliveInterval.isZero()
+                && !b.tcpKeepAliveInterval.isNegative()) {
+            this.tcpKeepAliveIntervalSecs = (int) b.tcpKeepAliveInterval.getSeconds();
+        }
+        if (b.tcpKeepAliveCount > 0) {
+            this.tcpKeepAliveProbeCount = b.tcpKeepAliveCount;
+        }
     }
 
     /**
@@ -95,6 +108,7 @@ public class ConnectionClient {
                 s.setSoTimeout(receiveTimeoutMs);
                 s.setTcpNoDelay(true);
                 s.setKeepAlive(tcpKeepAlive);
+                applyKeepAliveTuning(s);
                 this.socket = s;
                 this.out    = s.getOutputStream();
                 this.in     = s.getInputStream();
@@ -105,6 +119,26 @@ public class ConnectionClient {
             throw new IOException("failed to connect to " + host + ":" + port + " after " + retry.retries + " retries", e);
         }
         logger.info("connected", "host", host, "port", port, "actor", actorName);
+    }
+
+    // Aggressive keepalive so a dead/half-open peer surfaces within ~30s:
+    // idle 15s, then up to 3 probes 5s apart. These are jdk.net extended options
+    // (Java 11+, Linux/macOS); unsupported platforms fall back to SO_KEEPALIVE.
+    // NOTE: the standard JDK Socket API cannot set TCP_USER_TIMEOUT, so writes to
+    // a half-dead peer rely on the receive-loop liveness deadline plus keepalive.
+    private static final int KEEPALIVE_IDLE_SECS     = 15;
+    private static final int KEEPALIVE_INTERVAL_SECS = 5;
+    private static final int KEEPALIVE_PROBE_COUNT   = 3;
+
+    private void applyKeepAliveTuning(Socket s) {
+        try {
+            s.setOption(jdk.net.ExtendedSocketOptions.TCP_KEEPIDLE, tcpKeepAliveIdleSecs);
+            s.setOption(jdk.net.ExtendedSocketOptions.TCP_KEEPINTERVAL, tcpKeepAliveIntervalSecs);
+            s.setOption(jdk.net.ExtendedSocketOptions.TCP_KEEPCOUNT, tcpKeepAliveProbeCount);
+        } catch (UnsupportedOperationException | IOException | IllegalArgumentException ex) {
+            logger.debug("extended keepalive options unsupported, using OS defaults",
+                    "error", ex.getMessage());
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -125,7 +159,11 @@ public class ConnectionClient {
         sendLock.lock();
         try {
             if (sendTimeoutMs > 0) {
-                socket.setSoTimeout(sendTimeoutMs);
+                try {
+                    socket.setSoTimeout(sendTimeoutMs);
+                } catch (java.net.SocketException e) {
+                    throw GatewayDError.ERR_CLIENT_SEND_FAILED.wrap(e);
+                }
             }
             int total = 0;
             int zeroWrites = 0;
@@ -137,9 +175,10 @@ public class ConnectionClient {
                     total += toWrite;
                     zeroWrites = 0;
                 } catch (IOException e) {
+                    // A write failure means the socket is dead (RST/broken pipe).
                     logger.error("send failed", "host", host, "error", e.getMessage());
                     connected.set(false);
-                    throw GatewayDError.ERR_CLIENT_SEND_FAILED.wrap(e);
+                    throw GatewayDError.ERR_CONNECTION_LOST.wrap(e);
                 }
             }
             if (wireHook != null) wireHook.onSend(data);
@@ -182,12 +221,15 @@ public class ConnectionClient {
             throw GatewayDError.ERR_CLIENT_RECEIVE_FAILED.wrap(e);
         }
 
-        // Phase 1: read 9-byte length prefix
+        // Phase 1: read 9-byte length prefix. A timeout here with nothing read is
+        // a benign idle wait; any framing/IO error is fatal.
         byte[] prefix = new byte[9];
-        readFully(prefix, 0, 9, timeout);
+        readFully(prefix, 0, 9, timeout, true);
 
         if (!isValidLengthPrefix(prefix)) {
-            throw GatewayDError.ERR_CLIENT_RECEIVE_FAILED.wrap(
+            // Out of sync: a framed stream cannot be resynced -> fatal.
+            connected.set(false);
+            throw GatewayDError.ERR_CONNECTION_LOST.wrap(
                     new IOException("connection out of sync: invalid length prefix: " + new String(prefix)));
         }
 
@@ -196,31 +238,43 @@ public class ConnectionClient {
         try {
             totalMsgLength = decodeLengthPrefix(prefix);
         } catch (NumberFormatException e) {
-            throw GatewayDError.ERR_CLIENT_RECEIVE_FAILED.wrap(
+            connected.set(false);
+            throw GatewayDError.ERR_CONNECTION_LOST.wrap(
                     new IOException("failed to parse message length prefix", e));
         }
 
         int remaining = (int) (totalMsgLength - 9);
         if (remaining < 0) {
-            throw GatewayDError.ERR_CLIENT_RECEIVE_FAILED.wrap(
+            connected.set(false);
+            throw GatewayDError.ERR_CONNECTION_LOST.wrap(
                     new IOException("invalid message length: " + totalMsgLength));
         }
 
-        // Phase 2: read remaining bytes
+        // Phase 2: read remaining bytes. We are mid-frame, so any timeout or IO
+        // error desyncs the stream -> fatal.
         byte[] buffer = new byte[(int) totalMsgLength];
         System.arraycopy(prefix, 0, buffer, 0, 9);
-        readFully(buffer, 9, remaining, timeout);
+        readFully(buffer, 9, remaining, timeout, false);
 
         if (wireHook != null) wireHook.onReceive(buffer);
         return buffer;
     }
 
-    private void readFully(byte[] buf, int offset, int length, int timeoutMs) throws GatewayDError {
+    /**
+     * Reads exactly {@code length} bytes.
+     *
+     * @param idleAllowed when true, a timeout before any byte is read is a benign
+     *                    idle timeout (ERR_RECEIVE_IDLE_TIMEOUT). Otherwise, and
+     *                    once any byte has been read, a timeout means the stream is
+     *                    mid-frame and now dead (ERR_CONNECTION_LOST).
+     */
+    private void readFully(byte[] buf, int offset, int length, int timeoutMs, boolean idleAllowed)
+            throws GatewayDError {
         int read = 0;
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (read < length) {
             if (System.currentTimeMillis() > deadline) {
-                throw GatewayDError.ERR_CLIENT_RECEIVE_FAILED.wrap(
+                throw classifyReadTimeout(idleAllowed, read,
                         new SocketTimeoutException("receive timeout after " + timeoutMs + "ms"));
             }
             int remaining = length - read;
@@ -229,20 +283,29 @@ public class ConnectionClient {
             try {
                 n = in.read(buf, offset + read, chunkSize);
             } catch (SocketTimeoutException e) {
-                // If still within deadline, retry; otherwise propagate
+                // If still within deadline, retry; otherwise classify.
                 if (System.currentTimeMillis() < deadline) continue;
-                throw GatewayDError.ERR_CLIENT_RECEIVE_FAILED.wrap(e);
+                throw classifyReadTimeout(idleAllowed, read, e);
             } catch (IOException e) {
                 connected.set(false);
-                throw GatewayDError.ERR_CLIENT_RECEIVE_FAILED.wrap(e);
+                throw GatewayDError.ERR_CONNECTION_LOST.wrap(e);
             }
             if (n == -1) {
                 connected.set(false);
-                throw GatewayDError.ERR_CLIENT_RECEIVE_FAILED.wrap(
+                throw GatewayDError.ERR_CONNECTION_LOST.wrap(
                         new IOException("connection closed by remote (EOF)"));
             }
             read += n;
         }
+    }
+
+    /** Classify a read timeout as benign idle (only before any frame byte) or fatal. */
+    private GatewayDError classifyReadTimeout(boolean idleAllowed, int read, Throwable cause) {
+        if (idleAllowed && read == 0) {
+            return GatewayDError.ERR_RECEIVE_IDLE_TIMEOUT.wrap(cause);
+        }
+        connected.set(false);
+        return GatewayDError.ERR_CONNECTION_LOST.wrap(cause);
     }
 
     // -------------------------------------------------------------------------
@@ -349,6 +412,9 @@ public class ConnectionClient {
         private Retry       retry;
         private PodOsLogger logger;
         private WireHook    wireHook;
+        private Duration    tcpKeepAliveIdle;
+        private Duration    tcpKeepAliveInterval;
+        private int         tcpKeepAliveCount;
 
         public Builder host(String v)             { this.host = v; return this; }
         public Builder port(String v)             { this.port = v; return this; }
@@ -361,6 +427,9 @@ public class ConnectionClient {
         public Builder retry(Retry v)             { this.retry = v; return this; }
         public Builder logger(PodOsLogger v)      { this.logger = v; return this; }
         public Builder wireHook(WireHook v)       { this.wireHook = v; return this; }
+        public Builder tcpKeepAliveIdle(Duration v)     { this.tcpKeepAliveIdle = v; return this; }
+        public Builder tcpKeepAliveInterval(Duration v) { this.tcpKeepAliveInterval = v; return this; }
+        public Builder tcpKeepAliveCount(int v)         { this.tcpKeepAliveCount = v; return this; }
 
         /**
          * Builds and connects the {@link ConnectionClient}.

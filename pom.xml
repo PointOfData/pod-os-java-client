@@ -90,6 +90,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.3.0</version>
+                <configuration>
+                    <environmentVariables>
+                        <PODOS_VALIDATE>1</PODOS_VALIDATE>
+                    </environmentVariables>
+                </configuration>
             </plugin>
 
             <!-- Sources JAR for IDE navigation -->

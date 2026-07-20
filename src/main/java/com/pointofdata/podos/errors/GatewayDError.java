@@ -31,6 +31,16 @@ public class GatewayDError extends RuntimeException {
 
     public ErrCode getCode() { return code; }
 
+    /** Whether this is a fatal connection-lost error (socket dead, must reconnect). */
+    public boolean isConnectionLost() {
+        return code == ErrCode.CONNECTION_LOST;
+    }
+
+    /** Whether this is a benign idle receive timeout (connection still healthy). */
+    public boolean isIdleTimeout() {
+        return code == ErrCode.RECEIVE_IDLE_TIMEOUT;
+    }
+
     @Override
     public String getMessage() {
         if (originalError == null) return message;
@@ -53,6 +63,10 @@ public class GatewayDError extends RuntimeException {
     public static final GatewayDError ERR_POOL_EXHAUSTED          = new GatewayDError(ErrCode.POOL_EXHAUSTED,          "pool is exhausted");
     public static final GatewayDError ERR_CLIENT_RECEIVE_FAILED   = new GatewayDError(ErrCode.CLIENT_RECEIVE_FAILED,   "couldn't receive data from the server");
     public static final GatewayDError ERR_CLIENT_SEND_FAILED      = new GatewayDError(ErrCode.CLIENT_SEND_FAILED,      "couldn't send data to the server");
+    /** Fatal: the connection was lost; the caller should reconnect/retry. */
+    public static final GatewayDError ERR_CONNECTION_LOST         = new GatewayDError(ErrCode.CONNECTION_LOST,         "connection to gateway was lost during request");
+    /** Benign idle read timeout: the connection is still considered healthy. */
+    public static final GatewayDError ERR_RECEIVE_IDLE_TIMEOUT    = new GatewayDError(ErrCode.RECEIVE_IDLE_TIMEOUT,    "receive idle timeout");
     public static final GatewayDError ERR_VALIDATION_FAILED       = new GatewayDError(ErrCode.VALIDATION_FAILED,       "validation failed");
     public static final GatewayDError ERR_NIL_POINTER             = new GatewayDError(ErrCode.NIL_POINTER,             "nil pointer");
     public static final GatewayDError ERR_CAST_FAILED             = new GatewayDError(ErrCode.CAST_FAILED,             "failed to cast");

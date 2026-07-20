@@ -2,6 +2,7 @@ package com.pointofdata.podos;
 
 import com.pointofdata.podos.config.Config;
 import com.pointofdata.podos.connection.ConnectionClient;
+import com.pointofdata.podos.connection.ConnectionPool;
 import com.pointofdata.podos.connection.Retry;
 import com.pointofdata.podos.errors.GatewayDError;
 import com.pointofdata.podos.log.NoOpLogger;
@@ -16,6 +17,8 @@ import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 /**
  * High-performance Pod-OS client for the Actor messaging platform.
@@ -56,11 +59,21 @@ public class PodOsClient implements AutoCloseable {
      */
     public static final String ERR_CONNECTION_LOST = "connection to gateway was lost during request";
 
+    /** Receive-loop poll interval / liveness check cadence (ms). Fallback when config is null. */
+    private static final int DEFAULT_RECEIVE_LOOP_TIMEOUT_MS = 30_000;
+    /**
+     * Liveness backstop (ms): if requests are pending but no frame has been
+     * received for this long, the connection is declared dead even without a hard
+     * TCP error. Fallback when config is null.
+     */
+    private static final long DEFAULT_CONNECTION_LIVENESS_TIMEOUT_MS = 90_000;
+
     // =========================================================================
     // Instance state
     // =========================================================================
 
     private final ConnectionClient conn;
+    private final ConnectionPool pool;
     private final Config cfg;
     private final String gatewayActorName;
     private final String clientName;
@@ -81,18 +94,47 @@ public class PodOsClient implements AutoCloseable {
     // Reconnect state
     private final AtomicBoolean reconnecting     = new AtomicBoolean(false);
     private volatile int        reconnectAttempt = 0;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private volatile CompletableFuture<Boolean> reconnectFuture = null;
+    private final Object reconnectFutureLock = new Object();
+
+    // Connection state observer — called on every state transition.
+    private volatile BiConsumer<ConnectionState, Exception> stateHandler;
+
+    // Unmatched inbound message handler (concurrent mode only).
+    private volatile Consumer<Message> unmatchedHandler;
+
+    // App-level keepalive scheduler
+    private ScheduledExecutorService keepaliveExecutor;
+    private ScheduledFuture<?> keepaliveFuture;
 
     // =========================================================================
     // Constructor (private — use newClient())
     // =========================================================================
 
-    private PodOsClient(ConnectionClient conn, Config cfg, PodOsLogger logger) {
+    private PodOsClient(ConnectionClient conn, ConnectionPool pool, Config cfg, PodOsLogger logger) {
         this.conn              = conn;
+        this.pool              = pool;
         this.cfg               = cfg;
         this.gatewayActorName  = cfg.gatewayActorName;
         this.clientName        = cfg.clientName;
         this.registryKey       = makeKey(cfg.clientName, cfg.gatewayActorName);
         this.logger            = logger;
+        this.unmatchedHandler  = cfg.unmatchedMessageHandler;
+    }
+
+    private int receiveLoopTimeoutMs() {
+        if (cfg == null) {
+            return DEFAULT_RECEIVE_LOOP_TIMEOUT_MS;
+        }
+        return (int) cfg.getReceiveLoopTimeout().toMillis();
+    }
+
+    private long connectionLivenessTimeoutMs() {
+        if (cfg == null) {
+            return DEFAULT_CONNECTION_LIVENESS_TIMEOUT_MS;
+        }
+        return cfg.getConnectionLivenessTimeout().toMillis();
     }
 
     // =========================================================================
@@ -129,21 +171,25 @@ public class PodOsClient implements AutoCloseable {
 
         String key = makeKey(cfg.clientName, cfg.gatewayActorName);
 
-        // Fast-path: check registry without lock
-        PodOsClient existing = clientRegistry.get(key);
-        if (existing != null && existing.isConnected()) {
-            return existing;
+        if (!cfg.skipGlobalRegistry) {
+            // Fast-path: check registry without lock
+            PodOsClient existing = clientRegistry.get(key);
+            if (existing != null && existing.isConnected()) {
+                return existing;
+            }
         }
 
         // Slow-path: acquire lock and check again (double-checked locking)
         registryLock.lock();
         try {
-            existing = clientRegistry.get(key);
-            if (existing != null) {
-                if (existing.isConnected()) return existing;
-                // Remove stale entry
-                clientRegistry.remove(key);
-                actorRegistry.remove(cfg.gatewayActorName);
+            if (!cfg.skipGlobalRegistry) {
+                PodOsClient existing = clientRegistry.get(key);
+                if (existing != null) {
+                    if (existing.isConnected()) return existing;
+                    // Remove stale entry
+                    clientRegistry.remove(key);
+                    actorRegistry.remove(cfg.gatewayActorName);
+                }
             }
 
             PodOsLogger logger = resolveLogger(cfg);
@@ -165,12 +211,15 @@ public class PodOsClient implements AutoCloseable {
                     .dialTimeout(cfg.dialTimeout)
                     .sendTimeout(cfg.sendTimeout)
                     .receiveTimeout(cfg.receiveTimeout)
+                    .tcpKeepAliveIdle(cfg.tcpKeepAliveIdle)
+                    .tcpKeepAliveInterval(cfg.tcpKeepAliveInterval)
+                    .tcpKeepAliveCount(cfg.tcpKeepAliveCount)
                     .retry(retry)
                     .logger(logger)
                     .wireHook(cfg.wireHook)
                     .buildAndConnect();
 
-            PodOsClient client = new PodOsClient(conn, cfg, logger);
+            PodOsClient client = new PodOsClient(conn, createPoolIfConfigured(cfg, retry, logger), cfg, logger);
 
             // Send GatewayId handshake
             client.sendGatewayId();
@@ -186,6 +235,13 @@ public class PodOsClient implements AutoCloseable {
             // Start background receiver if concurrent mode is enabled
             if (cfg.enableConcurrentMode) {
                 client.startReceiver();
+            }
+
+            client.startKeepaliveLoop();
+
+            if (cfg.skipGlobalRegistry) {
+                logger.info("created unregistered client (warm-pool standby)", "key", key);
+                return client;
             }
 
             // Register
@@ -256,6 +312,21 @@ public class PodOsClient implements AutoCloseable {
         logger.info("GatewayStreamOn sent", "actor", gatewayActorName, "bytes", socketMsg.messageBytes.length);
     }
 
+    private void sendDisconnect() throws IOException {
+        if (!isConnected()) return;
+        SocketMessage socketMsg = encodeDisconnect();
+        sendLock.lock();
+        try {
+            if (!isConnected()) return;
+            sendRaw(socketMsg.messageBytes);
+        } finally {
+            sendLock.unlock();
+        }
+        if (logger.isEnabled(PodOsLogger.Level.DEBUG)) {
+            logger.debug("disconnect sent", "actor", gatewayActorName, "bytes", socketMsg.messageBytes.length);
+        }
+    }
+
     // =========================================================================
     // Public send methods
     // =========================================================================
@@ -313,8 +384,138 @@ public class PodOsClient implements AutoCloseable {
      */
     public void sendControlMessage(SocketMessage socketMsg) throws IOException {
         if (!isConnected()) throw new IOException("connection closed before sending control message");
-        sendRaw(socketMsg.messageBytes);
+        sendLock.lock();
+        try {
+            if (!isConnected()) throw new IOException("connection closed before sending control message");
+            sendRaw(socketMsg.messageBytes);
+        } finally {
+            sendLock.unlock();
+        }
         logger.info("control message sent", "actor", gatewayActorName, "bytes", socketMsg.messageBytes.length);
+    }
+
+    /**
+     * Sends an app-level AIP Keepalive (message_type 18) on the primary connection.
+     * Fire-and-forget; no response is expected.
+     */
+    public void sendKeepalive() throws IOException {
+        SocketMessage socketMsg = encodeKeepalive();
+        sendLock.lock();
+        try {
+            if (!isConnected()) throw new IOException("connection closed before sending keepalive");
+            sendRaw(socketMsg.messageBytes);
+        } finally {
+            sendLock.unlock();
+        }
+        if (logger.isEnabled(PodOsLogger.Level.DEBUG)) {
+            logger.debug("keepalive sent", "actor", gatewayActorName, "bytes", socketMsg.messageBytes.length);
+        }
+    }
+
+    private Message buildKeepaliveMessage() {
+        Message msg = new Message();
+        msg.to         = "$system@" + gatewayActorName;
+        msg.from       = clientName + "@" + gatewayActorName;
+        msg.intent     = IntentTypes.INSTANCE.Keepalive;
+        msg.clientName = clientName;
+        msg.messageId  = UUID.randomUUID().toString();
+        return msg;
+    }
+
+    private SocketMessage encodeKeepalive() {
+        return encode(buildKeepaliveMessage());
+    }
+
+    private Message buildDisconnectMessage() {
+        Message msg = new Message();
+        msg.to         = "$system@" + gatewayActorName;
+        msg.from       = clientName + "@" + gatewayActorName;
+        msg.intent     = IntentTypes.INSTANCE.GatewayDisconnect;
+        msg.clientName = clientName;
+        msg.messageId  = UUID.randomUUID().toString();
+        return msg;
+    }
+
+    private SocketMessage encodeDisconnect() {
+        return encode(buildDisconnectMessage());
+    }
+
+    private void startKeepaliveLoop() {
+        Duration interval = cfg.getKeepaliveInterval();
+        if (interval == null || interval.isZero() || interval.isNegative()) {
+            return;
+        }
+
+        keepaliveExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "podos-keepalive-" + gatewayActorName);
+            t.setDaemon(true);
+            return t;
+        });
+        long periodMs = interval.toMillis();
+        keepaliveFuture = keepaliveExecutor.scheduleAtFixedRate(() -> {
+            if (closed.get() || !isConnected() || reconnecting.get()) {
+                return;
+            }
+            try {
+                sendKeepalive();
+                sendPoolKeepalives();
+            } catch (Exception e) {
+                if (logger.isEnabled(PodOsLogger.Level.DEBUG)) {
+                    logger.debug("keepalive send failed", "actor", gatewayActorName, "error", e.getMessage());
+                }
+            }
+        }, periodMs, periodMs, TimeUnit.MILLISECONDS);
+    }
+
+    private void stopKeepaliveLoop() {
+        if (keepaliveFuture != null) {
+            keepaliveFuture.cancel(false);
+            keepaliveFuture = null;
+        }
+        if (keepaliveExecutor != null) {
+            keepaliveExecutor.shutdownNow();
+            keepaliveExecutor = null;
+        }
+    }
+
+    private void sendPoolKeepalives() {
+        if (pool == null || pool.isClosed()) {
+            return;
+        }
+        final byte[] wire;
+        try {
+            wire = encodeKeepalive().messageBytes;
+        } catch (RuntimeException e) {
+            if (logger.isEnabled(PodOsLogger.Level.DEBUG)) {
+                logger.debug("encode pool keepalive failed", "error", e.getMessage());
+            }
+            return;
+        }
+        pool.pingIdleConnections(client -> {
+            try {
+                client.send(wire);
+            } catch (GatewayDError e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    private static ConnectionPool createPoolIfConfigured(Config cfg, Retry retry, PodOsLogger logger) throws IOException {
+        if (cfg.poolConfig == null || cfg.poolConfig.maxCapacity <= 0) {
+            return null;
+        }
+        return new ConnectionPool(cfg.poolConfig, () -> ConnectionClient.builder()
+                .host(cfg.host)
+                .port(cfg.port)
+                .network(cfg.network)
+                .actorName(cfg.gatewayActorName)
+                .dialTimeout(cfg.dialTimeout)
+                .sendTimeout(cfg.sendTimeout)
+                .receiveTimeout(cfg.receiveTimeout)
+                .retry(retry)
+                .logger(logger)
+                .wireHook(cfg.wireHook)
+                .buildAndConnect());
     }
 
     // =========================================================================
@@ -322,15 +523,52 @@ public class PodOsClient implements AutoCloseable {
     // =========================================================================
 
     private Message sendSync(Message msg, Duration timeout) throws IOException {
-        byte[] raw = sendSyncRaw(msg, timeout);
-        Message response = MessageDecoder.decodeMessage(raw);
-        checkResponseError(response);
-        return response;
+        try {
+            byte[] raw = doSendSyncRaw(msg, timeout);
+            Message response = MessageDecoder.decodeMessage(raw);
+            checkResponseError(response);
+            return response;
+        } catch (IOException e) {
+            if (cfg.reconnectConfig.isEnabled() && isConnectionLost(e)) {
+                logger.info("sync send failed with connection error, attempting reconnection",
+                        "actor", gatewayActorName, "error", e.getMessage());
+                if (attemptReconnection(e)) {
+                    byte[] raw = doSendSyncRaw(msg, timeout);
+                    Message response = MessageDecoder.decodeMessage(raw);
+                    checkResponseError(response);
+                    return response;
+                }
+            }
+            throw e;
+        }
     }
 
     private byte[] sendSyncRaw(Message msg, Duration timeout) throws IOException {
+        try {
+            return doSendSyncRaw(msg, timeout);
+        } catch (IOException e) {
+            if (cfg.reconnectConfig.isEnabled() && isConnectionLost(e)) {
+                logger.info("sync send (raw) failed with connection error, attempting reconnection",
+                        "actor", gatewayActorName, "error", e.getMessage());
+                if (attemptReconnection(e)) {
+                    return doSendSyncRaw(msg, timeout);
+                }
+            }
+            throw e;
+        }
+    }
+
+    private byte[] doSendSyncRaw(Message msg, Duration timeout) throws IOException {
         SocketMessage socketMsg = encode(msg);
-        if (!isConnected()) throw new IOException("connection closed before sending message");
+        if (!isConnected()) {
+            if (cfg.reconnectConfig.isEnabled()) {
+                if (!waitForReconnect(timeout)) {
+                    throw new IOException(ERR_CONNECTION_LOST);
+                }
+            } else {
+                throw new IOException("connection closed before sending message");
+            }
+        }
         sendLock.lock();
         try { sendRaw(socketMsg.messageBytes); }
         finally { sendLock.unlock(); }
@@ -366,7 +604,15 @@ public class PodOsClient implements AutoCloseable {
         pending.put(messageId, future);
         try {
             SocketMessage socketMsg = encode(msg);
-            if (!isConnected()) throw new IOException("connection closed before sending message");
+            if (!isConnected()) {
+                if (cfg.reconnectConfig.isEnabled()) {
+                    if (!waitForReconnect(timeout)) {
+                        throw new IOException(ERR_CONNECTION_LOST);
+                    }
+                } else {
+                    throw new IOException("connection closed before sending message");
+                }
+            }
             sendLock.lock();
             try { sendRaw(socketMsg.messageBytes); }
             finally { sendLock.unlock(); }
@@ -429,10 +675,19 @@ public class PodOsClient implements AutoCloseable {
     }
 
     private void receiveLoop() {
+        // Liveness backstop: if requests are pending but no frame arrives for
+        // CONNECTION_LIVENESS_TIMEOUT_MS, the connection is declared dead even
+        // without a hard TCP error.
+        long lastActivity = System.currentTimeMillis();
         while (receiverActive.get() && !Thread.currentThread().isInterrupted()) {
             if (!isConnected()) {
-                if (cfg.reconnectConfig.isEnabled()) {
-                    if (attemptReconnection()) continue;
+                // The transport may have been marked dead by a sender's failed
+                // write; fail in-flight callers, then reconnect.
+                emitState(ConnectionState.DISCONNECTED, null);
+                cancelAllPending();
+                if (cfg.reconnectConfig.isEnabled() && attemptReconnection(null)) {
+                    lastActivity = System.currentTimeMillis();
+                    continue;
                 }
                 logger.info("connection lost, receiver exiting", "actor", gatewayActorName);
                 break;
@@ -440,21 +695,34 @@ public class PodOsClient implements AutoCloseable {
 
             byte[] responseBytes;
             try {
-                responseBytes = conn.receive(30_000); // 30s poll interval
+                responseBytes = conn.receive(receiveLoopTimeoutMs());
             } catch (GatewayDError e) {
                 if (!receiverActive.get()) break; // shutting down
-                String msg = e.getMessage();
-                if (isTimeoutError(msg)) continue; // normal idle timeout
-                if (isConnectionError(msg)) {
-                    logger.error("connection error in receiver", "actor", gatewayActorName, "error", msg);
-                    cancelAllPending();
-                    if (cfg.reconnectConfig.isEnabled() && attemptReconnection()) continue;
-                    break;
+
+                // Benign idle timeout: still alive unless we have pending requests
+                // and have heard nothing for too long (liveness backstop).
+                if (e.isIdleTimeout()) {
+                    if (pending.isEmpty()
+                            || System.currentTimeMillis() - lastActivity <= connectionLivenessTimeoutMs()) {
+                        continue;
+                    }
+                    logger.error("liveness timeout: pending requests with no frames received; treating connection as dead",
+                            "actor", gatewayActorName);
+                } else {
+                    logger.error("connection error in receiver", "actor", gatewayActorName, "error", e.getMessage());
                 }
-                logger.error("receive error", "actor", gatewayActorName, "error", msg);
-                continue;
+
+                // Fatal: fail all in-flight callers fast, then reconnect.
+                emitState(ConnectionState.DISCONNECTED, e);
+                cancelAllPending();
+                if (cfg.reconnectConfig.isEnabled() && attemptReconnection(e)) {
+                    lastActivity = System.currentTimeMillis();
+                    continue;
+                }
+                break;
             }
 
+            lastActivity = System.currentTimeMillis();
             if (responseBytes == null || responseBytes.length == 0) continue;
 
             // Decode enough to get the MessageId for routing
@@ -479,18 +747,35 @@ public class PodOsClient implements AutoCloseable {
                     logger.debug("routed response to caller", "message_id", messageId);
                 }
             } else {
-                if (logger.isEnabled(PodOsLogger.Level.DEBUG)) {
+                Consumer<Message> handler = unmatchedHandler;
+                if (handler != null) {
+                    try {
+                        Message decoded = MessageDecoder.decodeMessage(responseBytes);
+                        Thread dispatch = new Thread(
+                                () -> handler.accept(decoded),
+                                "podos-unmatched-" + messageId);
+                        dispatch.setDaemon(true);
+                        dispatch.start();
+                    } catch (Exception e) {
+                        logger.warn("failed to decode unmatched message",
+                                "message_id", messageId, "error", e.getMessage());
+                    }
+                } else if (logger.isEnabled(PodOsLogger.Level.DEBUG)) {
                     logger.debug("no pending request for MessageId", "message_id", messageId);
                 }
             }
         }
         receiverActive.set(false);
+        // Ensure no caller is left hanging when the loop exits for any reason.
+        cancelAllPending();
         logger.info("receiver loop exited", "actor", gatewayActorName);
     }
 
     private void cancelAllPending() {
         for (Map.Entry<String, CompletableFuture<byte[]>> entry : pending.entrySet()) {
-            entry.getValue().cancel(true);
+            // Fail with a retryable connection-lost error so callers fail fast
+            // (and can detect it via isConnectionLost) instead of blocking.
+            entry.getValue().completeExceptionally(new IOException(ERR_CONNECTION_LOST));
         }
         pending.clear();
     }
@@ -502,22 +787,40 @@ public class PodOsClient implements AutoCloseable {
     /**
      * Attempts to reconnect to the gateway with exponential backoff.
      *
+     * @param triggerErr the error that caused the reconnection attempt; forwarded to the
+     *                   {@link ConnectionState#RECONNECTING} callback. May be null.
      * @return true if reconnection and re-authentication succeeded, false otherwise
      */
-    public boolean attemptReconnection() {
+    public boolean attemptReconnection(Exception triggerErr) {
+        if (closed.get()) return false;
+
         if (!reconnecting.compareAndSet(false, true)) {
-            try { Thread.sleep(100); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-            return isConnected();
+            return waitForReconnect(cfg.responseTimeout != null ? cfg.responseTimeout : Duration.ofSeconds(30));
         }
+
         reconnectAttempt = 0;
+
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+        synchronized (reconnectFutureLock) {
+            reconnectFuture = future;
+        }
+
+        emitState(ConnectionState.RECONNECTING, triggerErr);
+
+        Exception lastErr = null;
         try {
-            int maxRetries = cfg.reconnectConfig.maxRetries > 0 ? cfg.reconnectConfig.maxRetries : 10;
+            int maxRetries = cfg.reconnectConfig.maxRetries;
+            boolean unlimited = maxRetries == 0;
             Duration backoff = cfg.reconnectConfig.getInitialBackoff();
             double multiplier = cfg.reconnectConfig.getBackoffMultiplier();
             Duration maxBackoff = cfg.reconnectConfig.getMaxBackoff();
 
-            for (int attempt = 1; attempt <= maxRetries || maxRetries == 0; attempt++) {
-                if (receiverStopped.get() || Thread.currentThread().isInterrupted()) return false;
+            for (int attempt = 1; unlimited || attempt <= maxRetries; attempt++) {
+                if (closed.get() || receiverStopped.get() || Thread.currentThread().isInterrupted()) {
+                    future.complete(false);
+                    emitState(ConnectionState.RECONNECT_FAILED, lastErr);
+                    return false;
+                }
                 reconnectAttempt = attempt;
                 logger.info("reconnect attempt", "attempt", attempt, "max", maxRetries, "actor", gatewayActorName, "backoff", backoff);
 
@@ -525,23 +828,38 @@ public class PodOsClient implements AutoCloseable {
                     conn.reconnect();
                     reAuthenticate();
                     logger.info("reconnection successful", "actor", gatewayActorName);
+                    future.complete(true);
+                    emitState(ConnectionState.CONNECTED, null);
                     return true;
                 } catch (Exception e) {
+                    lastErr = e;
                     logger.warn("reconnect attempt failed", "attempt", attempt, "actor", gatewayActorName, "error", e.getMessage());
                 }
 
                 try { Thread.sleep(backoff.toMillis()); }
-                catch (InterruptedException ie) { Thread.currentThread().interrupt(); return false; }
+                catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    future.complete(false);
+                    emitState(ConnectionState.RECONNECT_FAILED, lastErr);
+                    return false;
+                }
 
                 long nextMs = (long) (backoff.toMillis() * multiplier);
                 if (nextMs > maxBackoff.toMillis()) nextMs = maxBackoff.toMillis();
                 backoff = Duration.ofMillis(nextMs);
             }
             logger.warn("max reconnection attempts reached", "actor", gatewayActorName);
+            future.complete(false);
+            emitState(ConnectionState.RECONNECT_FAILED, lastErr);
             return false;
         } finally {
             reconnecting.set(false);
         }
+    }
+
+    /** Backwards-compatible overload for callers without a trigger error. */
+    public boolean attemptReconnection() {
+        return attemptReconnection(null);
     }
 
     private void reAuthenticate() throws IOException {
@@ -628,9 +946,74 @@ public class PodOsClient implements AutoCloseable {
 
     public String getClientName()       { return clientName; }
     public String getGatewayActorName() { return gatewayActorName; }
+    public PodOsLogger getLogger()      { return logger; }
+
+    /** Returns true if this client has been permanently closed. */
+    public boolean isClosed() { return closed.get(); }
 
     /** Returns the underlying {@link ConnectionClient} for direct socket operations. */
     public ConnectionClient getConn()   { return conn; }
+
+    /**
+     * Registers a callback that fires on every connection state transition.
+     * The error parameter is:
+     * <ul>
+     *   <li>{@link ConnectionState#DISCONNECTED}: the error that caused the disconnect.</li>
+     *   <li>{@link ConnectionState#RECONNECTING}: the trigger error (may be null).</li>
+     *   <li>{@link ConnectionState#CONNECTED}: null (reconnect succeeded).</li>
+     *   <li>{@link ConnectionState#RECONNECT_FAILED}: the last reconnect attempt error.</li>
+     * </ul>
+     *
+     * <p>Note: {@link ConnectionState#CONNECTED} is not emitted for the initial connection
+     * in {@link #newClient(Config)} because no handler can be registered before the
+     * constructor returns. It is only emitted after a successful reconnect.
+     *
+     * <p>The callback is invoked synchronously so it should be fast and non-blocking.
+     * Safe to call before or after {@link #startReceiver()}.
+     *
+     * @param fn the state change handler
+     */
+    public void onConnectionStateChange(BiConsumer<ConnectionState, Exception> fn) {
+        this.stateHandler = fn;
+    }
+
+    /**
+     * Registers a handler invoked (on a new thread) for every message received by the
+     * background receiver that does not match any pending outbound request.
+     * Must be called before {@link #startReceiver()} (or before {@link #newClient(Config)}
+     * when {@link Config#enableConcurrentMode} is true) to avoid missing early messages.
+     */
+    public void setUnmatchedMessageHandler(Consumer<Message> fn) {
+        this.unmatchedHandler = fn;
+    }
+
+    private void emitState(ConnectionState state, Exception err) {
+        BiConsumer<ConnectionState, Exception> fn = stateHandler;
+        if (fn != null) {
+            fn.accept(state, err);
+        }
+    }
+
+    /**
+     * Blocks until the client is connected or the timeout expires.
+     * Returns true if the connection was restored, false otherwise.
+     */
+    private boolean waitForReconnect(Duration timeout) {
+        if (isConnected()) return true;
+
+        CompletableFuture<Boolean> future;
+        synchronized (reconnectFutureLock) {
+            future = reconnectFuture;
+        }
+        if (future == null) return false;
+
+        try {
+            Boolean result = future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            return result != null && result && isConnected();
+        } catch (TimeoutException | InterruptedException | ExecutionException e) {
+            return false;
+        }
+    }
 
     // =========================================================================
     // Lifecycle
@@ -641,8 +1024,18 @@ public class PodOsClient implements AutoCloseable {
      */
     @Override
     public void close() {
+        closed.set(true);
+        synchronized (reconnectFutureLock) {
+            CompletableFuture<Boolean> future = reconnectFuture;
+            if (future != null && !future.isDone()) {
+                future.complete(false);
+            }
+        }
+
         if (receiverActive.get()) stopReceiver();
         else receiverStopped.set(true);
+
+        stopKeepaliveLoop();
 
         registryLock.lock();
         try {
@@ -651,7 +1044,18 @@ public class PodOsClient implements AutoCloseable {
         } finally {
             registryLock.unlock();
         }
-        if (conn != null) conn.close();
+        if (pool != null) {
+            try { pool.close(); } catch (Exception ignored) {}
+        }
+        if (conn != null) {
+            try {
+                sendDisconnect();
+            } catch (IOException e) {
+                logger.warn("failed to send GatewayDisconnect before close",
+                        "error", e.getMessage(), "actor", gatewayActorName);
+            }
+            conn.close();
+        }
         logger.info("client closed", "key", registryKey, "actor", gatewayActorName);
     }
 
@@ -728,16 +1132,22 @@ public class PodOsClient implements AutoCloseable {
         return Long.parseLong(s, 10);
     }
 
-    private static boolean isTimeoutError(String msg) {
-        if (msg == null) return false;
-        return msg.contains("timeout") || msg.contains("timed out") || msg.contains("SoTimeout");
-    }
-
-    private static boolean isConnectionError(String msg) {
-        if (msg == null) return false;
-        return msg.contains("EOF") || msg.contains("Connection reset")
-                || msg.contains("Broken pipe") || msg.contains("Connection refused")
-                || msg.contains("closed") || msg.contains("Socket closed");
+    /**
+     * Typed connection-loss classification (replaces substring matching): walks the
+     * cause chain for a {@link GatewayDError} flagged as connection-lost, or an
+     * IOException carrying the {@link #ERR_CONNECTION_LOST} sentinel message.
+     */
+    private static boolean isConnectionLost(Throwable t) {
+        for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+            if (cur instanceof GatewayDError && ((GatewayDError) cur).isConnectionLost()) {
+                return true;
+            }
+            if (cur instanceof IOException && ERR_CONNECTION_LOST.equals(cur.getMessage())) {
+                return true;
+            }
+            if (cur.getCause() == cur) break; // guard against self-referential cause
+        }
+        return false;
     }
 
     private static String makeKey(String clientName, String actorName) {

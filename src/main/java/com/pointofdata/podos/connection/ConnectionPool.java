@@ -227,4 +227,54 @@ public class ConnectionPool implements AutoCloseable {
 
     /** Returns the {@link PoolConfig} this pool was created with. */
     public PoolConfig getConfig() { return config; }
+
+    /**
+     * Invokes {@code ping} on each idle (not checked-out) connection, then returns
+     * live connections to the idle queue. Checked-out connections are skipped.
+     *
+     * @param ping action to run on each idle connection
+     * @return number of idle connections successfully pinged
+     */
+    public int pingIdleConnections(java.util.function.Consumer<ConnectionClient> ping) {
+        if (ping == null) {
+            return 0;
+        }
+
+        lock.lock();
+        try {
+            if (closed) {
+                return 0;
+            }
+
+            java.util.List<ConnectionClient> snapshot = new java.util.ArrayList<>();
+            while (!idle.isEmpty()) {
+                snapshot.add(idle.pop());
+            }
+
+            int sent = 0;
+            for (ConnectionClient client : snapshot) {
+                if (closed) {
+                    liveCount = Math.max(0, liveCount - 1);
+                    try { client.close(); } catch (Exception ignored) {}
+                    continue;
+                }
+                if (!client.isConnected()) {
+                    liveCount = Math.max(0, liveCount - 1);
+                    try { client.close(); } catch (Exception ignored) {}
+                    continue;
+                }
+                try {
+                    ping.accept(client);
+                    sent++;
+                    idle.push(client);
+                } catch (RuntimeException e) {
+                    liveCount = Math.max(0, liveCount - 1);
+                    try { client.close(); } catch (Exception ignored) {}
+                }
+            }
+            return sent;
+        } finally {
+            lock.unlock();
+        }
+    }
 }

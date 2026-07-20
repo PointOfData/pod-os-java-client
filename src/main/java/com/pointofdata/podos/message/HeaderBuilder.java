@@ -24,6 +24,7 @@ public final class HeaderBuilder {
         switch (intent.name) {
             case "GatewayId":         return gatewayIdentifyConnectionHeader(msg);
             case "GatewayStreamOn":   return gatewayStreamOnHeader(msg);
+            case "GatewayDisconnect": return gatewayDisconnectHeader(msg);
             case "ActorStreamOff":    return gatewayStreamOffHeader(msg);
             case "ActorEcho":         return actorEchoHeader(msg);
             case "StoreEvent":        return storeEventMessageHeader(msg);
@@ -37,6 +38,8 @@ public final class HeaderBuilder {
             case "BatchStoreTags":    return storeBatchTagsMessageHeader(msg);
             case "StoreBatchLinks":   return batchLinkEventsMessageHeader(msg);
             case "ActorRequest":      return actorRequestHeader(msg);
+            case "StatusRequest":     return statusRequestHeader(msg);
+            case "Status":            return statusHeader(msg);
             default:                  return "";
         }
     }
@@ -72,6 +75,14 @@ public final class HeaderBuilder {
         return "";
     }
 
+    /** Constructs the GatewayDisconnect header. */
+    public static String gatewayDisconnectHeader(Message msg) {
+        if (msg.messageId != null && !msg.messageId.isEmpty()) {
+            return "_msg_id=" + msg.messageId;
+        }
+        return "";
+    }
+
     /** Constructs the GatewayStreamOff header. */
     public static String gatewayStreamOffHeader(Message msg) {
         if (msg.messageId != null && !msg.messageId.isEmpty()) {
@@ -84,6 +95,35 @@ public final class HeaderBuilder {
     public static String actorEchoHeader(Message msg) {
         String id = msg.messageId != null ? msg.messageId : "";
         return "_msg_id=" + id;
+    }
+
+    /** Constructs the StatusRequest header used for actor health probes. */
+    public static String statusRequestHeader(Message msg) {
+        if (notEmpty(msg.messageId)) {
+            return "_msg_id=" + msg.messageId;
+        }
+        return "";
+    }
+
+    /** Constructs a Status response header (_status, optional _msg, _msg_id). */
+    public static String statusHeader(Message msg) {
+        StringBuilder h = new StringBuilder();
+        String status = "OK";
+        String messageText = "";
+        if (msg.response != null) {
+            if (notEmpty(msg.response.status)) {
+                status = msg.response.status;
+            }
+            messageText = msg.response.message != null ? msg.response.message : "";
+        }
+        h.append("_status=").append(status).append('\t');
+        if (!messageText.isEmpty()) {
+            h.append("_msg=").append(messageText).append('\t');
+        }
+        if (notEmpty(msg.messageId)) {
+            h.append("_msg_id=").append(msg.messageId);
+        }
+        return h.toString();
     }
 
     /** Constructs the ActorRequest header (sends _type=status). */
