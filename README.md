@@ -144,10 +144,15 @@ On explicit close, the client sends a fire-and-forget AIP `GatewayDisconnect` fr
 | `poolConfig` | `PoolConfig` | defaults | Connection pool settings |
 | `reconnectConfig` | `ReconnectConfig` | defaults | Auto-reconnection settings |
 | `keepaliveInterval` | `Duration` | `30s` | App-level AIP Keepalive period; `Duration.ZERO` disables |
+| `connectionLivenessTimeout` | `Duration` | `90s` | Pending-request liveness backstop; negative disables |
 
 ### App-Level Keepalive
 
 The client sends periodic AIP `Keepalive` frames (message_type 18) on the primary connection and idle pooled connections. Set `keepaliveInterval` to `Duration.ZERO` to disable. The loop starts after GatewayId/StreamOn, pauses during reconnect, and stops on `close()`.
+
+### Connection Liveness
+
+In concurrent mode the receive loop polls with a short idle timeout (default **30s**). Idle timeouts are benign — the connection is still considered healthy. If requests are pending but no frame has been received for `connectionLivenessTimeout` (default **90s**), the connection is declared dead and reconnect runs when enabled. Set `connectionLivenessTimeout` to a negative duration to disable this backstop.
 
 ### Actor Health Checks (Non-Neural Memory Actors)
 

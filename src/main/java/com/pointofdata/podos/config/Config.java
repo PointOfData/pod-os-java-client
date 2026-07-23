@@ -135,7 +135,7 @@ public class Config {
     /**
      * Liveness backstop: if requests are pending but no frame has been received for
      * this long, the connection is declared dead. When unset (null or zero), defaults
-     * to 90 seconds.
+     * to 90 seconds. Negative disables the backstop.
      */
     public Duration connectionLivenessTimeout = null;
 
@@ -216,11 +216,13 @@ public class Config {
         return receiveLoopTimeout;
     }
 
-    /** Returns the configured liveness backstop or the default. */
+    /** Returns the configured liveness backstop or the default. Returns zero when disabled. */
     public Duration getConnectionLivenessTimeout() {
-        if (connectionLivenessTimeout == null || connectionLivenessTimeout.isZero()
-                || connectionLivenessTimeout.isNegative()) {
+        if (connectionLivenessTimeout == null || connectionLivenessTimeout.isZero()) {
             return DEFAULT_CONNECTION_LIVENESS_TIMEOUT;
+        }
+        if (connectionLivenessTimeout.isNegative()) {
+            return Duration.ZERO;
         }
         return connectionLivenessTimeout;
     }

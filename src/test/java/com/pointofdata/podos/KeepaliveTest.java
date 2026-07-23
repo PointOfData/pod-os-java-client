@@ -28,6 +28,26 @@ class KeepaliveTest {
     }
 
     @Test
+    void configDefaultConnectionLivenessTimeout() {
+        Config cfg = new Config();
+        assertEquals(Duration.ofSeconds(90), cfg.getConnectionLivenessTimeout());
+    }
+
+    @Test
+    void configCustomConnectionLivenessTimeout() {
+        Config cfg = new Config();
+        cfg.connectionLivenessTimeout = Duration.ofSeconds(15);
+        assertEquals(Duration.ofSeconds(15), cfg.getConnectionLivenessTimeout());
+    }
+
+    @Test
+    void configDisabledConnectionLivenessTimeout() {
+        Config cfg = new Config();
+        cfg.connectionLivenessTimeout = Duration.ofSeconds(-1);
+        assertEquals(Duration.ZERO, cfg.getConnectionLivenessTimeout());
+    }
+
+    @Test
     void buildKeepaliveMessageUsesIntent18() throws Exception {
         PodOsClient client = newEmptyClient("my-client", "zeroth.pod-os.com");
         Method build = PodOsClient.class.getDeclaredMethod("buildKeepaliveMessage");

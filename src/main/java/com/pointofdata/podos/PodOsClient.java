@@ -702,7 +702,8 @@ public class PodOsClient implements AutoCloseable {
                 // Benign idle timeout: still alive unless we have pending requests
                 // and have heard nothing for too long (liveness backstop).
                 if (e.isIdleTimeout()) {
-                    if (pending.isEmpty()
+                    if (connectionLivenessTimeoutMs() == 0
+                            || pending.isEmpty()
                             || System.currentTimeMillis() - lastActivity <= connectionLivenessTimeoutMs()) {
                         continue;
                     }
