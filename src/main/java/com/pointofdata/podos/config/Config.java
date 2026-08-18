@@ -32,8 +32,9 @@ public class Config {
     /** Gateway port. Default: "62312". */
     public String port = "62312";
     /**
-     * Name of the gateway Actor (e.g. "zeroth.pod-os.com").
-     * Used as the {@code @GatewayName} part of {@code To} / {@code From} addresses.
+     * Connection gateway FQN (socket identity), e.g. {@code "zeroth.pod-os.com"}.
+     * Used for GatewayId/StreamOn and envelope {@code from} addresses—not the
+     * {@code to} routing domain when peer-routing to actors on other gateways.
      * Required.
      */
     public String gatewayActorName = "";

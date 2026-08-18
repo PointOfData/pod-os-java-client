@@ -947,6 +947,12 @@ public class PodOsClient implements AutoCloseable {
 
     public String getClientName()       { return clientName; }
     public String getGatewayActorName() { return gatewayActorName; }
+
+    /** Sender routing identity for this connection: {@code clientName@gatewayActorName}. */
+    public String fromAddress() {
+        return clientName + "@" + gatewayActorName;
+    }
+
     public PodOsLogger getLogger()      { return logger; }
 
     /** Returns true if this client has been permanently closed. */
@@ -1065,14 +1071,8 @@ public class PodOsClient implements AutoCloseable {
     // =========================================================================
 
     private void normalizeMessage(Message msg) {
-        if (msg.clientName == null || !msg.clientName.equals(clientName)) {
-            msg.clientName = clientName;
-        }
-        if (msg.from != null && msg.from.contains("@")) {
-            String[] parts = msg.from.split("@", 2);
-            String expected = clientName + "@" + parts[1];
-            if (!msg.from.equals(expected)) msg.from = expected;
-        }
+        msg.clientName = clientName;
+        msg.from = fromAddress();
         if (msg.messageId == null || msg.messageId.isEmpty()) {
             msg.messageId = UUID.randomUUID().toString();
         }
