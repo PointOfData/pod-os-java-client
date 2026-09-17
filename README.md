@@ -63,11 +63,11 @@ import com.pointofdata.podos.PodOsClient;
 import com.pointofdata.podos.config.Config;
 
 Config cfg = new Config();
-cfg.host             = "zeroth.pod-os.com";
+cfg.host             = "gateway-nlb.example.com";
 cfg.port             = "62312";
-cfg.gatewayActorName = "zeroth.pod-os.com";
+cfg.gatewayActorName = "zeroth.customer.example.com";
 cfg.clientName       = "my-java-app";
-cfg.passcode         = "secret";
+// passcode omitted — only set if that gateway's INI requires it
 
 // Optional: enable concurrent mode for high-throughput parallel sends
 cfg.enableConcurrentMode = true;
@@ -77,6 +77,15 @@ cfg.logLevel = 3; // 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG
 
 PodOsClient client = PodOsClient.newClient(cfg);
 ```
+
+### Connect to a hosted gateway
+
+1. Dial the **chosen** gateway's TCP endpoint (`host:62312`).
+2. Set `gatewayActorName` to **that gateway's FQN** (the connection gateway you dialed — any gateway you are permitted to use; not necessarily the actor's `@domain`). Leave `From` empty or equal to `fromAddress()` — a mismatched `From` throws `IllegalArgumentException`.
+3. Keep roughly **8–10 concurrent** ENM requests per connection; higher fan-out can time out silently.
+3. Use a unique `clientName` per TCP connection. Set `From = clientName@<dialed-gateway-FQN>` (`client.getClientName() + "@" + client.getGatewayActorName()`).
+4. Omit `passcode` unless that gateway's INI requires it. Not Auth0 or dashboard OAuth tokens.
+5. If `GatewayId` succeeds but a request times out, the gateway likely could not route the reply — check unique `clientName` and `From`. This is not an authentication failure.
 
 ### 3. Send a message
 
@@ -130,7 +139,7 @@ On explicit close, the client sends a fire-and-forget AIP `GatewayDisconnect` fr
 | `network` | `String` | `"tcp"` | Protocol (`"tcp"`, `"udp"`, `"unix"`) |
 | `gatewayActorName` | `String` | `""` | Actor name used in message routing (**required**) |
 | `clientName` | `String` | `""` | Unique client identifier (**required**) |
-| `passcode` | `String` | `""` | Authentication passcode |
+| `passcode` | `String` | `""` | Optional AIP passcode (omit unless gateway INI requires it; not Auth0) |
 | `dialTimeout` | `Duration` | `5s` | TCP connect timeout |
 | `sendTimeout` | `Duration` | `5s` | Socket write timeout |
 | `receiveTimeout` | `Duration` | `5s` | Socket read timeout |

@@ -297,11 +297,11 @@ public final class MessageEncoder {
         sb.append(key).append('=').append(value);
     }
 
-    /** Appends tags as {@code \ttag_N=freq:key=value} to the builder. */
+    /** Appends tags as {@code \ttag_N=freq:key=value} to the builder (1-indexed; tag_0 is dropped by the actor). */
     private static void appendTagsForBatchPayload(StringBuilder sb, List<Tag> tags) {
         for (int i = 0; i < tags.size(); i++) {
             Tag tag = tags.get(i);
-            sb.append('\t').append("tag_").append(i)
+            sb.append('\t').append("tag_").append(i + 1)
               .append('=').append(tag.frequency).append(':').append(tag.key)
               .append('=').append(MessageUtils.serializeTagValue(tag.value));
         }

@@ -173,6 +173,8 @@ Clauses are evaluated in order. Each clause is tab-separated `fieldname:value` p
 
 #### Example 1 — Basic GetEventsForTags
 
+**Important:** the search clause goes in `payload.data`. There is no `SearchOptions` type in the Java SDK — do not invent one.
+
 ```java
 Message msg = new Message();
 msg.to         = "mem@zeroth.example.com";
@@ -369,3 +371,21 @@ String clauses =
 
 msg.payload.data = clauses;
 ```
+
+## Integration notes
+
+### Pagination (`end_result`)
+
+`start_result` / `end_result` slice results in **storage order**, not relevance order. For ranking, fetch the full candidate set and re-rank client-side.
+
+### `_hits` is not a relevance score
+
+`_hits` includes stored term frequency. Re-rank on distinct matched keys, then IDF-weighted frequency — do not sort on `_hits` alone.
+
+### Concurrency
+
+Keep roughly **8–10 concurrent** requests per actor connection. Higher fan-out can cause silent timeouts.
+
+### Batch write status
+
+After batch writes, check `BatchStatus.batchLinksFailed(msg)` / `BatchStatus.batchEventsFailed(msg)` — envelope `OK` can hide per-record failures.

@@ -10,6 +10,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Envelope from-address must always use the connection gateway (Go SDK parity). */
 class NormalizeFromTest {
@@ -21,7 +22,7 @@ class NormalizeFromTest {
     }
 
     @Test
-    void normalizeMessageFromUsesConnectionGatewayNotCallerDomain() throws Exception {
+    void normalizeMessageRejectsDisagreeingFrom() throws Exception {
         PodOsClient client = testClient("my-client", "zeroth.pod-os.com");
         Message msg = new Message();
         msg.to = "kb@skills.pod-os.com";
@@ -29,10 +30,7 @@ class NormalizeFromTest {
         msg.clientName = "other";
         msg.intent = IntentType.GetEvent;
 
-        invokeNormalize(client, msg);
-
-        assertEquals("my-client", msg.clientName);
-        assertEquals("my-client@zeroth.pod-os.com", msg.from);
+        assertThrows(IllegalArgumentException.class, () -> invokeNormalize(client, msg));
     }
 
     @Test

@@ -623,7 +623,10 @@ public class PodOsClient implements AutoCloseable {
                 return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             } catch (TimeoutException e) {
                 throw new IOException("request timed out waiting for response [MessageId: " + messageId
-                        + "] to " + gatewayActorName, e);
+                        + "] to " + gatewayActorName
+                        + ". If GatewayId succeeded, the gateway may not have routed the reply: "
+                        + "use a unique ClientName and From = ClientName@<dialed-gateway-FQN>. "
+                        + "This is not an authentication failure.", e);
             } catch (ExecutionException e) {
                 Throwable cause = e.getCause();
                 if (cause instanceof IOException) throw (IOException) cause;
@@ -1072,7 +1075,16 @@ public class PodOsClient implements AutoCloseable {
 
     private void normalizeMessage(Message msg) {
         msg.clientName = clientName;
-        msg.from = fromAddress();
+        String expectedFrom = fromAddress();
+        if (msg.from != null && !msg.from.isEmpty() && !msg.from.equals(expectedFrom)) {
+            throw new IllegalArgumentException(
+                    "message From " + msg.from + " disagrees with connection identity "
+                            + expectedFrom + "; set Config.gatewayActorName to the dialed gateway FQN "
+                            + "and leave From empty or equal to client.fromAddress()");
+        }
+        if (msg.from == null || msg.from.isEmpty()) {
+            msg.from = expectedFrom;
+        }
         if (msg.messageId == null || msg.messageId.isEmpty()) {
             msg.messageId = UUID.randomUUID().toString();
         }

@@ -19,6 +19,14 @@ Gateway Network. Each Gateway is a self-contained unit that integrates a messagi
 
 The Pod-OS model is concurrent, distributed processing. Each Gateway manages multiple local Actors, each of which runs independently of the Gateway process. Gateways mediate message traffic between multiple native processes. Messages are transferred between tasks using a queued message system, and messages are transferred between Gateways, Actors, and applications using the same message structures. Gateway provisions allow for non-continuously connected Actors to receive messages; messages may be stored in a mailbox which is then transmitted to a process when it makes a connection with the Actor hosting the mailbox. Messages not only carry information, but in keeping with the event-oriented concept design of Pod-OS, each message retains an audit trail recording all Gateways and Actors through which it has passed, and a reply will contain a wormhole route for return path processing. While useful for audit trails or historical analysis, trails can also be used to prevent unwanted closed processing loops in large concurrent systems.
 
+### Connect to a hosted gateway
+
+1. Dial the **chosen** gateway's TCP endpoint (`host:62312`).
+2. Set `gatewayActorName` to **that gateway's FQN** (the connection gateway you dialed).
+3. Use a unique `clientName` per TCP connection. Set `From = clientName@<dialed-gateway-FQN>`.
+4. Omit `passcode` unless that gateway's INI requires it. Not Auth0 credentials.
+5. If `GatewayId` succeeds but a request times out, check unique `clientName` and `From` — reply routing, not auth.
+
 ## Java Client Quick Start
 
 ```java
@@ -30,11 +38,11 @@ import java.util.UUID;
 
 // 1. Configure
 Config cfg = new Config();
-cfg.host             = "zeroth.pod-os.com";
+cfg.host             = "gateway-nlb.example.com";
 cfg.port             = "62312";
-cfg.gatewayActorName = "zeroth.pod-os.com";
+cfg.gatewayActorName = "zeroth.customer.example.com";
 cfg.clientName       = "MyJavaClient";
-cfg.passcode         = "secret";
+// passcode omitted — only set if that gateway's INI requires it
 cfg.enableConcurrentMode = true;   // pipeline multiple in-flight requests
 cfg.logLevel         = 3;          // INFO
 
