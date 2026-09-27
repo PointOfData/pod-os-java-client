@@ -567,7 +567,81 @@ public final class MessageValidator {
                     "message/EventFields.java:id", "message/HeaderBuilder.java:getEventMessageHeader"));
         }
         errs.addAll(validateLookupOwnerNotUsedEvent(intent, ev));
+        errs.addAll(validateGetEventTagFormat(intent, msg.getEventOpts()));
         return errs;
+    }
+
+    private static List<ValidationError> validateGetEventTagFormat(String intent, GetEventOptions opts) {
+        List<ValidationError> errs = new ArrayList<>();
+        if (opts == null) return errs;
+        final String tfField = "NeuralMemory.GetEvent.TagFormat";
+        final String ownerField = "NeuralMemory.GetEvent.TagOwnerOutput";
+
+        if (opts.tagFormat != null && opts.tagFormat != 0 && opts.tagFormat != 1) {
+            errs.add(err(intent, tfField, "tag_format", RULE_FORMAT,
+                    "tag_format must be 0 or 1; got " + opts.tagFormat + ".",
+                    "Set tagFormat to 1 for per-tag timestamps and owners, or leave it null for the default format 0.",
+                    "msg.neuralMemory.getEvent.tagFormat = 1",
+                    "message/GetEventOptions.java:tagFormat"));
+        }
+
+        boolean tagFormat1 = opts.tagFormat != null && opts.tagFormat == 1;
+        TagOwnerOutput owner = opts.tagOwnerOutput != null ? opts.tagOwnerOutput : TagOwnerOutput.NONE;
+        if (owner != TagOwnerOutput.NONE && !tagFormat1) {
+            errs.add(semanticErr(intent, ownerField, "output_tag_owner",
+                    "tagOwnerOutput only applies to tag_format=1; with tag_format=0 no owners are returned.",
+                    "Set tagFormat to 1 alongside tagOwnerOutput.",
+                    "msg.neuralMemory.getEvent.tagFormat = 1",
+                    "message/GetEventOptions.java:tagOwnerOutput", "message/HeaderBuilder.java:getEventMessageHeader"));
+        }
+        if (tagFormat1 && !opts.getTags) {
+            errs.add(semanticWarn(intent, tfField, "tag_format",
+                    "tagFormat=1 only changes how tags are returned, but getTags is false so no tags are requested.",
+                    "Set getTags to true.",
+                    "msg.neuralMemory.getEvent.getTags = true",
+                    "message/GetEventOptions.java:getTags"));
+        }
+        return errs;
+    }
+
+    private static List<ValidationError> validateGetEventsForTagsTagFormat(String intent, GetEventsForTagsOptions opts) {
+        List<ValidationError> errs = new ArrayList<>();
+        if (opts == null) return errs;
+        final String bfField = "NeuralMemory.GetEventsForTags.BufferFormat";
+        final String ownerField = "NeuralMemory.GetEventsForTags.TagOwnerOutput";
+        final String ownerWire = "get_tag_owner / get_tag_owner_unique_id";
+
+        String bf = opts.bufferFormat != null ? opts.bufferFormat : "";
+        if (!bf.isEmpty() && !"0".equals(bf) && !"1".equals(bf)) {
+            errs.add(err(intent, bfField, "buffer_format", RULE_FORMAT,
+                    "buffer_format must be \"0\" or \"1\"; got \"" + bf + "\".",
+                    "Set bufferFormat to \"1\" for one line per tag with timestamps and owners, or \"0\" (default) for inline tags.",
+                    "msg.neuralMemory.getEventsForTags.bufferFormat = \"1\"",
+                    "message/GetEventsForTagsOptions.java:bufferFormat"));
+        }
+
+        TagOwnerOutput owner = opts.tagOwnerOutput != null ? opts.tagOwnerOutput : TagOwnerOutput.NONE;
+        if (owner != TagOwnerOutput.NONE && !"1".equals(bf)) {
+            errs.add(semanticWarn(intent, ownerField, ownerWire,
+                    "tagOwnerOutput only applies to buffer_format=1; with buffer_format=0 no owners are returned.",
+                    "Set bufferFormat to \"1\" alongside tagOwnerOutput.",
+                    "msg.neuralMemory.getEventsForTags.bufferFormat = \"1\"",
+                    "message/GetEventsForTagsOptions.java:tagOwnerOutput",
+                    "message/HeaderBuilder.java:getEventsForTagMessageHeader"));
+        }
+        return errs;
+    }
+
+    /** Reports a header flag whose value is present but not Y or N. */
+    private static void validateWireYN(List<ValidationError> errs, Map<String, String> hm, String key,
+                                       String field, String exampleCode, String ref) {
+        if (!hm.containsKey(key)) return;
+        String v = hm.get(key);
+        if ("Y".equals(v) || "N".equals(v)) return;
+        errs.add(err("RawMessage", field, key, RULE_HEADER_VALUE,
+                key + " must be Y or N; got \"" + v + "\". A bare flag without =Y is ignored by Pod-OS.",
+                "Send " + key + "=Y (set " + field + ").",
+                exampleCode, ref));
     }
 
     private static List<ValidationError> validateGetEventResponse(Message msg) {
@@ -585,6 +659,7 @@ public final class MessageValidator {
             errs.add(nilStruct(intent, "NeuralMemory.GetEventsForTags",
                     "Initialize msg.neuralMemory.getEventsForTags = new GetEventsForTagsOptions()"));
         }
+        errs.addAll(validateGetEventsForTagsTagFormat(intent, msg.neuralMemory.getEventsForTags));
         return errs;
     }
 
@@ -999,10 +1074,51 @@ public final class MessageValidator {
                             "message/HeaderBuilder.java:storeDataMessageHeader"));
                 }
                 break;
-            case "get":
+            case "get": {
                 requireWireFieldOneOf(errs, intent, hm, "event_id", "unique_id");
+                String tf = hm.get("tag_format");
+                if (tf != null && !"0".equals(tf) && !"1".equals(tf)) {
+                    errs.add(err("RawMessage", "NeuralMemory.GetEvent.TagFormat", "tag_format", RULE_HEADER_VALUE,
+                            "tag_format must be 0 or 1; got \"" + tf + "\".",
+                            "Set msg.neuralMemory.getEvent.tagFormat to 0 or 1.",
+                            "msg.neuralMemory.getEvent.tagFormat = 1",
+                            "message/GetEventOptions.java:tagFormat"));
+                }
+                validateWireYN(errs, hm, "output_tag_owner", "NeuralMemory.GetEvent.TagOwnerOutput",
+                        "msg.neuralMemory.getEvent.tagOwnerOutput = TagOwnerOutput.EVENT_KEY",
+                        "message/GetEventOptions.java:tagOwnerOutput");
+                if (!isEmpty(hm.get("output_tag_owner")) && !"1".equals(tf)) {
+                    errs.add(semanticWarn("RawMessage", "NeuralMemory.GetEvent.TagOwnerOutput", "output_tag_owner",
+                            "output_tag_owner only applies to tag_format=1.",
+                            "Set msg.neuralMemory.getEvent.tagFormat to 1.",
+                            "msg.neuralMemory.getEvent.tagFormat = 1",
+                            "message/HeaderBuilder.java:getEventMessageHeader"));
+                }
                 break;
-            case "events_for_tag":
+            }
+            case "events_for_tag": {
+                String bf = hm.get("buffer_format");
+                if (bf != null && !"0".equals(bf) && !"1".equals(bf)) {
+                    errs.add(err("RawMessage", "NeuralMemory.GetEventsForTags.BufferFormat", "buffer_format", RULE_HEADER_VALUE,
+                            "buffer_format must be 0 or 1; got \"" + bf + "\".",
+                            "Set msg.neuralMemory.getEventsForTags.bufferFormat to \"0\" or \"1\".",
+                            "msg.neuralMemory.getEventsForTags.bufferFormat = \"1\"",
+                            "message/GetEventsForTagsOptions.java:bufferFormat"));
+                }
+                for (String key : new String[] {"get_tag_owner", "get_tag_owner_unique_id"}) {
+                    validateWireYN(errs, hm, key, "NeuralMemory.GetEventsForTags.TagOwnerOutput",
+                            "msg.neuralMemory.getEventsForTags.tagOwnerOutput = TagOwnerOutput.EVENT_KEY",
+                            "message/GetEventsForTagsOptions.java:tagOwnerOutput");
+                }
+                if ((!isEmpty(hm.get("get_tag_owner")) || !isEmpty(hm.get("get_tag_owner_unique_id")))
+                        && !"1".equals(bf)) {
+                    errs.add(semanticWarn("RawMessage", "NeuralMemory.GetEventsForTags.TagOwnerOutput",
+                            "get_tag_owner / get_tag_owner_unique_id",
+                            "get_tag_owner / get_tag_owner_unique_id only apply to buffer_format=1.",
+                            "Set msg.neuralMemory.getEventsForTags.bufferFormat to \"1\".",
+                            "msg.neuralMemory.getEventsForTags.bufferFormat = \"1\"",
+                            "message/HeaderBuilder.java:getEventsForTagMessageHeader"));
+                }
                 if (!hm.containsKey("buffer_results")) {
                     errs.add(warn("RawMessage", "header.buffer_results", "buffer_results", RULE_HEADER_MISSING,
                             "Header 'buffer_results' is always written by the encoder.",
@@ -1010,6 +1126,7 @@ public final class MessageValidator {
                             "", "message/HeaderBuilder.java:getEventsForTagMessageHeader"));
                 }
                 break;
+            }
             case "link":
                 requireWireField(errs, intent, "strength_a", null, hm);
                 requireWireField(errs, intent, "strength_b", null, hm);

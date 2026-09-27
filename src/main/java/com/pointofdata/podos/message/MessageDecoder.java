@@ -395,26 +395,18 @@ public final class MessageDecoder {
         }
     }
 
+    /**
+     * Parses event_tag headers from a GetEvent response, ordered by tag number.
+     * Formats: {@code event_tag:nnnnnnnnn:fffffffff} (tag_format=0) and
+     * {@code event_tag:nnnnnnnnn:fffffffff:ssssssssss.uuuuuu[:owner_id]} (tag_format=1); the value is key=value.
+     */
     private static List<TagOutput> parseEventTagHeaders(Map<String, String> hm) {
         List<TagOutput> results = new ArrayList<>();
         for (Map.Entry<String, String> entry : hm.entrySet()) {
-            String key = entry.getKey();
-            if (!key.startsWith("event_tag:")) continue;
-            String[] parts = key.split(":");
-            if (parts.length < 3) continue;
-            TagOutput tag = new TagOutput();
-            try { tag.frequency = Integer.parseInt(parts[2]); }
-            catch (NumberFormatException e) { tag.frequency = 1; }
-            String val = entry.getValue();
-            int eq = val.indexOf('=');
-            if (eq > 0) {
-                tag.key   = val.substring(0, eq);
-                tag.value = val.substring(eq + 1);
-            } else {
-                tag.value = val;
-            }
-            results.add(tag);
+            TagOutput tag = TagFormats.parseEventTagHeader(entry.getKey(), entry.getValue());
+            if (tag != null) results.add(tag);
         }
+        TagFormats.sortTagsByNumber(results);
         return results;
     }
 
@@ -480,7 +472,7 @@ public final class MessageDecoder {
         String payloadStr = getPayloadString(msg.payload);
         if (payloadStr.isEmpty()) return new ArrayList<>();
 
-        String[] lines = payloadStr.split("\n", -1);
+        String[] lines = TagFormats.normalizeTagOwnerLines(payloadStr).split("\n", -1);
 
         // Check for brief hits response
         for (String line : lines) {
@@ -499,6 +491,7 @@ public final class MessageDecoder {
         Map<String, List<String>>       linksBySource= new HashMap<>(estimated);
         Map<String, List<TagOutput>>    linkTagsMap  = new HashMap<>(estimated * 2);
         Map<String, List<TagOutput>>    targetTagsMap= new HashMap<>(estimated * 2);
+        Map<String, List<TagOutput>>    eventTagsMap = new HashMap<>(estimated);
 
         for (String line : lines) {
             line = trimNulls(line);
@@ -506,6 +499,8 @@ public final class MessageDecoder {
 
             if (line.startsWith("_event_id=")) {
                 parseEventIdLine(line, msg, eventsMap);
+            } else if (line.startsWith("_event_tag=")) {
+                parseEventTagLine(line, eventTagsMap);
             } else if (line.startsWith("_link=")) {
                 parseLinkLine(line, linksMap, linksBySource);
             } else if (line.startsWith("_linktag=")) {
@@ -520,6 +515,11 @@ public final class MessageDecoder {
         for (Map.Entry<String, EventFields> entry : eventsMap.entrySet()) {
             String eventId = entry.getKey();
             EventFields event = entry.getValue();
+            List<TagOutput> eventTags = eventTagsMap.get(eventId);
+            if (eventTags != null) {
+                event.tags.addAll(eventTags);
+                if (event.uniqueId.isEmpty()) event.uniqueId = uniqueIdFromTags(event.tags);
+            }
             List<String> linkIds = linksBySource.getOrDefault(eventId, new ArrayList<>());
             List<LinkFields> links = new ArrayList<>(linkIds.size());
             for (String linkId : linkIds) {
@@ -572,30 +572,58 @@ public final class MessageDecoder {
             catch (NumberFormatException ignored) {}
         }
         if (rec.containsKey("_mimetype")) ev.payloadData.mimeType = rec.get("_mimetype");
-        // Inline tags: tag:freq:key=value
-        for (Map.Entry<String, String> e : rec.entrySet()) {
-            String k = e.getKey();
-            if (k.startsWith("tag:")) {
-                String[] parts = k.split(":", 3);
-                if (parts.length == 3) {
-                    int freq = 0;
-                    try { freq = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
-                    TagOutput tag = new TagOutput();
-                    tag.frequency = freq;
-                    tag.key   = parts[2];
-                    tag.value = e.getValue();
-                    ev.tags.add(tag);
-                }
+        // Inline tags (tag:freq:key=value) in wire order. The fields are read directly rather than
+        // from rec because tags sharing a key and frequency would collide in the map.
+        for (String field : line.split("\t", -1)) {
+            int eq = field.indexOf('=');
+            if (eq <= 0 || !field.startsWith("tag:")) continue;
+            String[] parts = field.substring(0, eq).split(":", 3);
+            if (parts.length == 3) {
+                int freq = 0;
+                try { freq = Integer.parseInt(parts[1]); } catch (NumberFormatException ignored) {}
+                TagOutput tag = new TagOutput();
+                tag.frequency = freq;
+                tag.key   = parts[2];
+                tag.value = field.substring(eq + 1);
+                ev.tags.add(tag);
             }
         }
-        // Extract unique_id from tags
-        for (TagOutput tag : ev.tags) {
-            if ("_unique_id".equals(tag.key) || "unique_id".equals(tag.key)) {
-                ev.uniqueId = tag.value;
-                break;
-            }
-        }
+        if (rec.containsKey("_event_tag")) ev.tags.add(parseEventTagPayloadField(rec));
+        String uniqueId = uniqueIdFromTags(ev.tags);
+        if (!uniqueId.isEmpty()) ev.uniqueId = uniqueId;
         eventsMap.put(eventId, ev);
+    }
+
+    /**
+     * Parses a standalone buffer_format=1 tag line and files the tag under the event key it names:
+     * {@code _event_tag=<event key>\ttag_freq=n\ttag_value=key=value\ttag_timestamp=s.u[\towner=...]}
+     */
+    private static void parseEventTagLine(String line, Map<String, List<TagOutput>> eventTagsMap) {
+        Map<String, String> rec = parseTabDelimited(line);
+        String eventKey = rec.get("_event_tag");
+        if (eventKey == null || eventKey.isEmpty()) return;
+        eventTagsMap.computeIfAbsent(eventKey, k -> new ArrayList<>()).add(parseEventTagPayloadField(rec));
+    }
+
+    /** Parses tag fields from a GetEventsForTags record: tag_freq, tag_value (key=value), tag_timestamp, owner. */
+    private static TagOutput parseEventTagPayloadField(Map<String, String> rec) {
+        TagOutput tag = new TagOutput();
+        if (rec.containsKey("tag_freq")) {
+            try { tag.frequency = Integer.parseInt(rec.get("tag_freq")); }
+            catch (NumberFormatException ignored) {}
+        }
+        if (rec.containsKey("tag_value")) TagFormats.splitTagKeyValue(rec.get("tag_value"), tag);
+        tag.timestamp = rec.getOrDefault("tag_timestamp", "");
+        tag.owner = TagFormats.normalizeTagOwner(rec.getOrDefault("owner", ""));
+        return tag;
+    }
+
+    /** Returns the value of the _unique_id (or unique_id) tag, or "" when absent. */
+    private static String uniqueIdFromTags(List<TagOutput> tags) {
+        for (TagOutput tag : tags) {
+            if ("_unique_id".equals(tag.key) || "unique_id".equals(tag.key)) return tag.value;
+        }
+        return "";
     }
 
     private static void parseLinkLine(String line,

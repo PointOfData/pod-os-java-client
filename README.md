@@ -112,6 +112,33 @@ Message response = client.sendMessage(msg, Duration.ofSeconds(10));
 System.out.println("Status: " + response.processingStatus());
 ```
 
+### Tag Metadata (timestamps and owners)
+
+GetEvent and GetEventsForTags can return each tag's storage time and owning event. Both are opt-in:
+
+```java
+// GetEvent: tag_format=1 adds tagNumber and timestamp to every tag
+msg.neuralMemory.getEvent = new GetEventOptions();
+msg.neuralMemory.getEvent.getTags   = true;
+msg.neuralMemory.getEvent.tagFormat = 1;
+
+// GetEventsForTags: buffer_format=1 adds timestamp; tagOwnerOutput adds the owner
+msg.neuralMemory.getEventsForTags = new GetEventsForTagsOptions();
+msg.neuralMemory.getEventsForTags.bufferResults  = true;
+msg.neuralMemory.getEventsForTags.bufferFormat   = "1";
+msg.neuralMemory.getEventsForTags.tagOwnerOutput = TagOwnerOutput.UNIQUE_ID; // or EVENT_KEY
+
+Message response = client.sendMessage(msg, Duration.ofSeconds(10));
+for (TagOutput tag : response.response.eventRecords.get(0).tags) {
+    Optional<Instant> when = tag.time();                        // storage time, UTC
+    System.out.println(tag.key + "=" + tag.value + " " + when + " " + tag.ownerUniqueId); // tag.owner with EVENT_KEY
+}
+```
+
+`PodOsClient.sendMessage` routes the owner into `owner` (event key) or `ownerUniqueId` according to the request. When decoding raw bytes yourself, call `TagFormats.applyTagOwnerOutput(request, response)`. See "Tag Metadata" in `src/main/resources/knowledge/docs/Pod-OS-Neural-Memory-Retrieval-Prompts.md` for the rules.
+
+GetEventsForTags wire fixes in this release: `linkTagFilter` is now sent as `link_tag_pattern` (was `link_tag_filter`, which Pod-OS ignores), `getEventObjectCount` now sends `get_eo_count=Y`, and `buffer_format` always defaults to `0`.
+
 ### 4. Close the client
 
 ```java

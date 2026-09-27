@@ -348,10 +348,11 @@ public class PodOsClient implements AutoCloseable {
     public Message sendMessage(Message msg, Duration timeout) throws IOException {
         normalizeMessage(msg);
         Duration effectiveTimeout = timeout != null ? timeout : cfg.responseTimeout;
-        if (receiverActive.get()) {
-            return sendWithCorrelation(msg, effectiveTimeout);
-        }
-        return sendSync(msg, effectiveTimeout);
+        Message response = receiverActive.get()
+                ? sendWithCorrelation(msg, effectiveTimeout)
+                : sendSync(msg, effectiveTimeout);
+        TagFormats.applyTagOwnerOutput(msg, response);
+        return response;
     }
 
     /**
@@ -373,6 +374,7 @@ public class PodOsClient implements AutoCloseable {
         }
         Message decoded = MessageDecoder.decodeMessage(rawResponse);
         checkResponseError(decoded);
+        TagFormats.applyTagOwnerOutput(msg, decoded);
         return new Object[]{decoded, rawResponse};
     }
 

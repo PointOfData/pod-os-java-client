@@ -35,7 +35,7 @@ public class GetEventsForTagsOptions {
     public boolean getLinkTags;
     /** Return tags for link targets. */
     public boolean getTargetTags;
-    /** Regex filter for link tags. */
+    /** Regex filter for link tags (wire field {@code link_tag_pattern}). */
     public String linkTagFilter = "";
     /** Regex filter for target tags. */
     public String linkedEventsFilter = "";
@@ -55,8 +55,16 @@ public class GetEventsForTagsOptions {
     public boolean invertHitTagFilter;
     /** Filter for result tags. */
     public String hitTagFilter = "";
-    /** Output format: "0" = format a, "1" = format b. */
+    /**
+     * Output format: "0" (default) = tags inline on the {@code _event_id} line ({@code tag:freq:key=value}),
+     * "1" = one {@code _event_tag} line per tag with tag_freq, tag_value, tag_timestamp and optional owner.
+     */
     public String bufferFormat = "";
+    /**
+     * Report each tag's owner (requires {@code bufferFormat = "1"}): {@link TagOwnerOutput#EVENT_KEY} sends
+     * {@code get_tag_owner=Y}, {@link TagOwnerOutput#UNIQUE_ID} sends {@code get_tag_owner_unique_id=Y}.
+     */
+    public TagOwnerOutput tagOwnerOutput = TagOwnerOutput.NONE;
 
     public GetEventsForTagsOptions() {}
 }

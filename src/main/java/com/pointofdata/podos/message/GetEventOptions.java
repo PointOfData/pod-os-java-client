@@ -9,7 +9,10 @@ public class GetEventOptions {
     public boolean sendData;
     /** Return only local ID. */
     public boolean localIdOnly;
-    /** Tag output format (0 = default, 1 = extended). */
+    /**
+     * Tag output format: 0 (default) = {@code event_tag:n:f}, 1 = {@code event_tag:n:f:ssssssssss.uuuuuu[:owner]}
+     * (adds storage timestamp and owner).
+     */
     public Integer tagFormat;
     /** Output format (use 0 as default). */
     public int requestFormat;
@@ -35,6 +38,11 @@ public class GetEventOptions {
     public String categoryFilter = "";
     /** Regex filter for tags. */
     public String tagFilter = "";
+    /**
+     * Report each tag's owner (requires {@code tagFormat = 1}): {@link TagOwnerOutput#EVENT_KEY} sends
+     * {@code output_tag_owner=Y}, {@link TagOwnerOutput#UNIQUE_ID} sends {@code output_tag_owner=N}.
+     */
+    public TagOwnerOutput tagOwnerOutput = TagOwnerOutput.NONE;
 
     public GetEventOptions() {}
 }

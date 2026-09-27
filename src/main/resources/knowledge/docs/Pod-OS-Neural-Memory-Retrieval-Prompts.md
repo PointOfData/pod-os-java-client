@@ -351,6 +351,83 @@ Example:
 5	location	city=Seattle
 ```
 
+### Tag Metadata: Storage Timestamps and Owners (tag_format=1 / buffer_format=1)
+
+By default, tags come back as frequency plus `key=value`. Both retrieval intents can also report, for each tag, **when it was stored** and **which event created it** (its owner). Both formats are opt-in.
+
+| Intent | Request option | Wire | Per-tag data added |
+|---|---|---|---|
+| GetEvent | `GetEventOptions.tagFormat = 1` (with `getTags = true`) | `tag_format=1` | `TagOutput.tagNumber`, `TagOutput.timestamp`, owner when the server emits it |
+| GetEvent | `GetEventOptions.tagOwnerOutput = TagOwnerOutput.EVENT_KEY` / `UNIQUE_ID` | `output_tag_owner=Y` / `N` | owner as event key / unique ID |
+| GetEventsForTags | `GetEventsForTagsOptions.bufferFormat = "1"` | `buffer_format=1` | `TagOutput.timestamp` (one `_event_tag` line per tag) |
+| GetEventsForTags | `GetEventsForTagsOptions.tagOwnerOutput = TagOwnerOutput.EVENT_KEY` / `UNIQUE_ID` | `get_tag_owner=Y` / `get_tag_owner_unique_id=Y` | owner as event key / unique ID |
+
+#### Rules:
+- Request tag metadata only when the task needs it: auditing or provenance ("who asserted this tag?"), recency ("which tags were added after T?"), or reconciling duplicate tags. It makes responses larger (roughly 3x for `buffer_format=1`).
+- `tagOwnerOutput` needs the matching format: `tagFormat = 1` for GetEvent (validation error otherwise) and `bufferFormat = "1"` for GetEventsForTags (validation warning otherwise).
+- `TagOwnerOutput.EVENT_KEY` fills `TagOutput.owner` with the owning event's key. `TagOwnerOutput.UNIQUE_ID` fills `TagOutput.ownerUniqueId` with the owning event's unique ID. The response doesn't say which form it carries, so `PodOsClient.sendMessage` remaps using the request. If you decode raw bytes with `MessageDecoder.decodeMessage`, call `TagFormats.applyTagOwnerOutput(request, response)`.
+- A tag with no owning event (for example one created under `$sys`) has an empty owner. Pod-OS sends `NULL` or the all-zero key `+0000000000.000000...` for these, and the SDK normalizes both to `""`. An owner that has no unique ID is also empty under `UNIQUE_ID`.
+- `TagOutput.timestamp` is the POSIX UTC time the tag was stored, `"ssssssssss.uuuuuu"`, not the event's timestamp. Use `tag.time()` to get an `Optional<Instant>`.
+- GetEvent tags are ordered by `tagNumber`, the database tag counter.
+- Current Pod-OS builds leave the owner out of GetEvent `tag_format=1` output even when `output_tag_owner` is sent (verified live). Use GetEventsForTags with `bufferFormat = "1"` when you need owners.
+
+#### Example: GetEvent with tag timestamps
+
+```java
+Message msg = new Message();
+msg.to         = "mem@zeroth.example.com";
+msg.from       = "MyJavaClient@zeroth.example.com";
+msg.clientName = "MyJavaClient";
+msg.intent     = IntentTypes.INSTANCE.GetEvent;
+
+msg.event = new EventFields();
+msg.event.uniqueId = "order-1234";
+
+msg.neuralMemory = new NeuralMemoryFields();
+msg.neuralMemory.getEvent = new GetEventOptions();
+msg.neuralMemory.getEvent.getTags        = true;
+msg.neuralMemory.getEvent.tagFormat      = 1;
+msg.neuralMemory.getEvent.tagOwnerOutput = TagOwnerOutput.EVENT_KEY;
+
+Message response = client.sendMessage(msg, Duration.ofSeconds(10));
+// response.event.tags.get(i): tagNumber=17 frequency=1 key="status" value="shipped"
+//                             timestamp="1790266973.722260" owner=""
+```
+
+#### Example: GetEventsForTags with tag owners by unique ID
+
+```java
+Message msg = new Message();
+msg.to         = "mem@zeroth.example.com";
+msg.from       = "MyJavaClient@zeroth.example.com";
+msg.clientName = "MyJavaClient";
+msg.intent     = IntentTypes.INSTANCE.GetEventsForTags;
+
+msg.payload = new PayloadFields("clause_type:S\tboolean:or\tlow:status=shipped", "text/plain");
+
+msg.neuralMemory = new NeuralMemoryFields();
+msg.neuralMemory.getEventsForTags = new GetEventsForTagsOptions();
+msg.neuralMemory.getEventsForTags.bufferResults  = true;
+msg.neuralMemory.getEventsForTags.getAllData     = true;
+msg.neuralMemory.getEventsForTags.bufferFormat   = "1";
+msg.neuralMemory.getEventsForTags.tagOwnerOutput = TagOwnerOutput.UNIQUE_ID;
+
+Message response = client.sendMessage(msg, Duration.ofSeconds(30));
+for (EventFields ev : response.response.eventRecords) {
+    for (TagOutput tag : ev.tags) {
+        // tag.timestamp = "1790266974.325930", tag.ownerUniqueId = "warehouse-7" ("" when unowned)
+    }
+}
+```
+
+Wire format for `buffer_format=1` (one line per tag after each `_event_id` line):
+
+```
+_event_tag=<event key>	tag_freq=5	tag_value=size=large	tag_timestamp=1790266974.325930	owner=<event key or unique ID>
+```
+
+The SDK also handles a server quirk where the `owner` field is written after the line's newline. Always use the decoder rather than parsing these lines by hand.
+
 ---
 
 ## Programmable Searches (Compound)

@@ -276,7 +276,12 @@ public final class HeaderBuilder {
             if (notEmpty(opts.targetFacetFilter))  h.append("target_facet_filter=").append(opts.targetFacetFilter).append('\t');
             if (notEmpty(opts.categoryFilter))     h.append("category_filter=").append(opts.categoryFilter).append('\t');
             if (notEmpty(opts.tagFilter))          h.append("tag_filter=").append(opts.tagFilter).append('\t');
-            h.append("tag_format=0\t");
+            h.append("tag_format=").append(opts.tagFormat != null ? opts.tagFormat : 0).append('\t');
+            if (opts.tagOwnerOutput == TagOwnerOutput.EVENT_KEY) {
+                h.append("output_tag_owner=Y\t");
+            } else if (opts.tagOwnerOutput == TagOwnerOutput.UNIQUE_ID) {
+                h.append("output_tag_owner=N\t");
+            }
             h.append("request_format=0\t");
             if (opts.firstLink > 0) h.append("first_link=").append(opts.firstLink).append('\t');
             if (opts.linkCount > 0) h.append("link_count=").append(opts.linkCount).append('\t');
@@ -316,16 +321,22 @@ public final class HeaderBuilder {
             if (opts.countMatchLinks)  h.append("count_match_links=Y\t");
             if (opts.getLinkTags)      h.append("get_link_tags=Y\t");
             if (opts.getTargetTags)    h.append("get_target_tags=Y\t");
+            if (opts.getEventObjectCount) h.append("get_eo_count=Y\t");
             if (invertHitTagFilter)    h.append("invert_hit_tag_filter=Y\t");
             if (notEmpty(opts.eventPattern))        h.append("event=").append(forceAscii(opts.eventPattern)).append('\t');
             if (notEmpty(opts.eventPatternHigh))    h.append("event_high=").append(forceAscii(opts.eventPatternHigh)).append('\t');
-            if (notEmpty(opts.linkTagFilter))       h.append("link_tag_filter=").append(forceAscii(opts.linkTagFilter)).append('\t');
+            if (notEmpty(opts.linkTagFilter))       h.append("link_tag_pattern=").append(forceAscii(opts.linkTagFilter)).append('\t');
             if (notEmpty(opts.linkedEventsFilter))  h.append("linked_events_tag_filter=").append(forceAscii(opts.linkedEventsFilter)).append('\t');
             if (notEmpty(opts.linkCategory))        h.append("link_category=").append(opts.linkCategory).append('\t');
             if (notEmpty(opts.owner)) {
                 h.append("owner=").append(forceAscii(opts.owner)).append('\t');
             } else if (notEmpty(opts.ownerUniqueId)) {
                 h.append("owner_unique_id=").append(opts.ownerUniqueId).append('\t');
+            }
+            if (opts.tagOwnerOutput == TagOwnerOutput.EVENT_KEY) {
+                h.append("get_tag_owner=Y\t");
+            } else if (opts.tagOwnerOutput == TagOwnerOutput.UNIQUE_ID) {
+                h.append("get_tag_owner_unique_id=Y\t");
             }
             if (notEmpty(hitTagFilter)) h.append("hit_tag_filter=").append(forceAscii(hitTagFilter)).append('\t');
             if (opts.firstLink > 0)        h.append("first_link=").append(opts.firstLink).append('\t');
@@ -335,7 +346,7 @@ public final class HeaderBuilder {
             if (opts.endResult > 0)        h.append("end_result=").append(opts.endResult).append('\t');
             if (opts.minEventHits > 0)     h.append("min_event_hits=").append(opts.minEventHits).append('\t');
         }
-        h.append("buffer_format=").append(notEmpty(bufferFormat) ? bufferFormat : "1").append('\t');
+        h.append("buffer_format=").append(bufferFormat).append('\t');
         if (notEmpty(msg.messageId)) h.append("_msg_id=").append(msg.messageId);
         return h.toString();
     }
