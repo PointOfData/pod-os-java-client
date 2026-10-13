@@ -36,8 +36,8 @@ public class EventFields {
     public String type = "";
     /** Tags for the event; populated from response messages. */
     public List<TagOutput> tags = new ArrayList<>();
-    /** Links for the event; populated from response messages. */
-    public List<LinkFields> links = new ArrayList<>();
+    /** Viewer-perspective adjacency from GetEvent / GetEventsForTags. */
+    public List<Linked> links = new ArrayList<>();
     /** Payload data associated with the event in a response. */
     public PayloadFields payloadData = new PayloadFields();
     /** Status of the event; used in StoreBatchEvents response. */

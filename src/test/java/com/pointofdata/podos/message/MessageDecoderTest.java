@@ -35,11 +35,11 @@ class MessageDecoderTest {
     }
 
     @Test
-    @DisplayName("GetEventsForTags links populate uniqueIdA from parent event uniqueId")
-    void getEventsForTagsLinksPopulateUniqueIdA() {
+    @DisplayName("GetEventsForTags _link= decodes as Linked from the hit's perspective")
+    void getEventsForTagsDecodesLinked() {
         String header = "_type=events_for_tag\t_status=OK\t_count=1";
         String payload = "_event_id=evt1\tunique_id=src_uid\ttag:1:_unique_id=src_uid\n"
-                + "_link=link1\tsource=evt1\ttarget=evt2\tstrength=0.9\tcategory=describes\ttarget_unique_id=tgt_uid";
+                + "_link=link1\tsource=evt1\tsource_unique_id=src_uid\ttarget=evt2\tstrength=0.9\tcategory=describes\ttarget_unique_id=tgt_uid";
 
         byte[] raw = buildMinimalMessage(
                 "mem@gateway.example.com", "client@gateway.example.com",
@@ -53,14 +53,17 @@ class MessageDecoderTest {
         EventFields event = msg.response.eventRecords.get(0);
         assertEquals(1, event.links.size());
 
-        LinkFields link = event.links.get(0);
-        assertEquals("src_uid", link.uniqueIdA);
-        assertEquals("tgt_uid", link.uniqueIdB);
+        Linked link = event.links.get(0);
+        assertEquals("src_uid", link.sourceUniqueId);
+        assertEquals("tgt_uid", link.targetUniqueId);
+        assertEquals(0.9, link.strength);
+        assertEquals("evt1", link.sourceId);
+        assertEquals("evt2", link.targetId);
     }
 
     @Test
-    @DisplayName("GetEvent links populate uniqueIdA from parent event uniqueId")
-    void getEventLinksPopulateUniqueIdA() {
+    @DisplayName("GetEvent _link= decodes as Linked from the returned event")
+    void getEventDecodesLinked() {
         String header = "_type=get\t_status=OK\t_event_id=evt1\t_unique_id=src_uid";
         String payload = "_link=link1\ttarget_event=evt2\ttarget_unique_id=tgt_uid\tstrength=0.9\tcategory=describes";
 
@@ -73,8 +76,37 @@ class MessageDecoderTest {
         assertNotNull(msg.event);
         assertEquals(1, msg.event.links.size());
 
-        LinkFields link = msg.event.links.get(0);
-        assertEquals("src_uid", link.uniqueIdA);
-        assertEquals("tgt_uid", link.uniqueIdB);
+        Linked link = msg.event.links.get(0);
+        assertEquals("src_uid", link.sourceUniqueId);
+        assertEquals("tgt_uid", link.targetUniqueId);
+        assertEquals(0.9, link.strength);
+        assertEquals("evt1", link.sourceId);
+        assertEquals("evt2", link.targetId);
+    }
+
+    @Test
+    @DisplayName("GetEvent outbound and inbound both decode as source=returned event")
+    void getEventViewerPerspective() {
+        String header = "_type=get\t_status=OK\t_event_id=evt_a\t_unique_id=eo_seed_a";
+        String payload = "_link=+1\tunique_id=lk_a_to_x\ttarget_event=evt_x\ttarget_unique_id=eo_nbr_x\tstrength=0.750000\tcategory=supplies_to\n"
+                + "_link=+2\tunique_id=lk_b_to_a\ttarget_event=evt_b\ttarget_unique_id=eo_nbr_b\tstrength=0.250000\tcategory=supplies_to";
+
+        byte[] raw = buildMinimalMessage(
+                "mem@gateway.example.com", "client@gateway.example.com",
+                header, 1001, 0, payload);
+
+        Message msg = MessageDecoder.decodeMessage(raw);
+
+        assertNotNull(msg.event);
+        assertEquals(2, msg.event.links.size());
+
+        Linked out = msg.event.links.get(0);
+        Linked inb = msg.event.links.get(1);
+        assertEquals("eo_seed_a", out.sourceUniqueId);
+        assertEquals("eo_nbr_x", out.targetUniqueId);
+        assertEquals(0.75, out.strength, 1e-9);
+        assertEquals("eo_seed_a", inb.sourceUniqueId);
+        assertEquals("eo_nbr_b", inb.targetUniqueId);
+        assertEquals(0.25, inb.strength, 1e-9);
     }
 }

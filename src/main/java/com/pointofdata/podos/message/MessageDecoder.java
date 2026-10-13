@@ -338,7 +338,7 @@ public final class MessageDecoder {
 
     private static void parseGetEventResponse(Message msg, Map<String, String> headerMap) {
         List<TagOutput> tags  = new ArrayList<>();
-        List<LinkFields> links = new ArrayList<>();
+        List<Linked> links = new ArrayList<>();
 
         if (msg.response == null) return;
 
@@ -349,7 +349,7 @@ public final class MessageDecoder {
         String payloadStr = getPayloadString(msg.payload);
 
         if (!payloadStr.isEmpty()) {
-            Map<String, LinkFields> linkMap         = new LinkedHashMap<>();
+            Map<String, Linked> linkMap         = new LinkedHashMap<>();
             Map<String, List<TagOutput>> linkTagsMap   = new HashMap<>();
             Map<String, List<TagOutput>> targetTagsMap = new HashMap<>();
 
@@ -358,7 +358,7 @@ public final class MessageDecoder {
                 if (line.isEmpty() || line.equals("\u000F") || line.equals("\u0000")) continue;
 
                 if (line.startsWith("_link=")) {
-                    LinkFields lk = parseGetEventLinkLine(line, headerMap);
+                    Linked lk = parseGetEventLinkLine(line, headerMap, msg.event);
                     if (lk != null) linkMap.put(lk.id, lk);
                 } else if (line.startsWith("_linktag\t") || line.equals("_linktag")) {
                     Map.Entry<String, TagOutput> e = parseGetEventLinkTagLine(line);
@@ -369,19 +369,21 @@ public final class MessageDecoder {
                 } else {
                     Map<String, String> rec = parseTabDelimited(line);
                     if (rec.containsKey("_link")) {
-                        LinkFields lk = parseGetEventLinkLine(line, headerMap);
+                        Linked lk = parseGetEventLinkLine(line, headerMap, msg.event);
                         if (lk != null) linkMap.put(lk.id, lk);
                     }
                 }
             }
-            for (LinkFields lk : linkMap.values()) {
+            for (Linked lk : linkMap.values()) {
                 lk.tags = linkTagsMap.getOrDefault(lk.id, new ArrayList<>());
-                if (!lk.eventB.isEmpty()) {
-                    lk.targetTags = targetTagsMap.getOrDefault(lk.eventB, new ArrayList<>());
+                if (!lk.targetId.isEmpty()) {
+                    lk.targetTags = targetTagsMap.getOrDefault(lk.targetId, new ArrayList<>());
                 }
-                // Populate uniqueIdA from parent event's uniqueId (links are stored on the source event)
-                if (lk.uniqueIdA.isEmpty() && msg.event != null && !msg.event.uniqueId.isEmpty()) {
-                    lk.uniqueIdA = msg.event.uniqueId;
+                if (lk.sourceUniqueId.isEmpty() && msg.event != null && !msg.event.uniqueId.isEmpty()) {
+                    lk.sourceUniqueId = msg.event.uniqueId;
+                }
+                if (lk.sourceId.isEmpty() && msg.event != null && !msg.event.id.isEmpty()) {
+                    lk.sourceId = msg.event.id;
                 }
                 links.add(lk);
             }
@@ -410,22 +412,34 @@ public final class MessageDecoder {
         return results;
     }
 
-    private static LinkFields parseGetEventLinkLine(String line, Map<String, String> headerMap) {
+    private static Linked parseGetEventLinkLine(String line, Map<String, String> headerMap, EventFields request) {
         Map<String, String> rec = parseTabDelimited(line);
         String linkId = rec.get("_link");
         if (linkId == null || linkId.isEmpty()) return null;
-        LinkFields lk = new LinkFields();
+        Linked lk = new Linked();
         lk.id = linkId;
-        lk.eventB      = rec.getOrDefault("target_event", "");
-        lk.uniqueIdB   = rec.getOrDefault("target_unique_id", "");
-        lk.uniqueId    = rec.getOrDefault("unique_id", "");
-        lk.category    = rec.getOrDefault("category", "");
+        lk.targetId       = rec.getOrDefault("target_event", "");
+        lk.targetUniqueId = rec.getOrDefault("target_unique_id", "");
+        lk.uniqueId       = rec.getOrDefault("unique_id", "");
+        lk.category       = rec.getOrDefault("category", "");
         if (rec.containsKey("strength")) {
-            try { lk.strengthB = Double.parseDouble(rec.get("strength")); }
+            try { lk.strength = Double.parseDouble(rec.get("strength")); }
             catch (NumberFormatException ignored) {}
         }
-        if (headerMap.containsKey("event_id"))  lk.eventA = headerMap.get("event_id");
-        else if (headerMap.containsKey("_event_id")) lk.eventA = headerMap.get("_event_id");
+        if (request != null) {
+            if (request.id != null) lk.sourceId = request.id;
+            if (request.uniqueId != null) lk.sourceUniqueId = request.uniqueId;
+        }
+        if (headerMap != null) {
+            if (lk.sourceId.isEmpty()) {
+                if (headerMap.containsKey("event_id")) lk.sourceId = headerMap.get("event_id");
+                else if (headerMap.containsKey("_event_id")) lk.sourceId = headerMap.get("_event_id");
+            }
+            if (lk.sourceUniqueId.isEmpty()) {
+                if (headerMap.containsKey("_unique_id")) lk.sourceUniqueId = headerMap.get("_unique_id");
+                else if (headerMap.containsKey("unique_id")) lk.sourceUniqueId = headerMap.get("unique_id");
+            }
+        }
         return lk;
     }
 
@@ -487,7 +501,7 @@ public final class MessageDecoder {
 
         int estimated = Math.max(16, lines.length / 10);
         Map<String, EventFields>        eventsMap    = new LinkedHashMap<>(estimated);
-        Map<String, LinkFields>         linksMap     = new HashMap<>(estimated * 2);
+        Map<String, Linked>         linksMap     = new HashMap<>(estimated * 2);
         Map<String, List<String>>       linksBySource= new HashMap<>(estimated);
         Map<String, List<TagOutput>>    linkTagsMap  = new HashMap<>(estimated * 2);
         Map<String, List<TagOutput>>    targetTagsMap= new HashMap<>(estimated * 2);
@@ -521,17 +535,19 @@ public final class MessageDecoder {
                 if (event.uniqueId.isEmpty()) event.uniqueId = uniqueIdFromTags(event.tags);
             }
             List<String> linkIds = linksBySource.getOrDefault(eventId, new ArrayList<>());
-            List<LinkFields> links = new ArrayList<>(linkIds.size());
+            List<Linked> links = new ArrayList<>(linkIds.size());
             for (String linkId : linkIds) {
-                LinkFields lk = linksMap.get(linkId);
+                Linked lk = linksMap.get(linkId);
                 if (lk == null) continue;
                 lk.tags = linkTagsMap.getOrDefault(linkId, new ArrayList<>());
-                if (!lk.eventB.isEmpty()) {
-                    lk.targetTags = targetTagsMap.getOrDefault(lk.eventB, new ArrayList<>());
+                if (!lk.targetId.isEmpty()) {
+                    lk.targetTags = targetTagsMap.getOrDefault(lk.targetId, new ArrayList<>());
                 }
-                // Populate uniqueIdA from parent event's uniqueId (links are stored on the source event)
-                if (lk.uniqueIdA.isEmpty() && !event.uniqueId.isEmpty()) {
-                    lk.uniqueIdA = event.uniqueId;
+                if (lk.sourceUniqueId.isEmpty() && !event.uniqueId.isEmpty()) {
+                    lk.sourceUniqueId = event.uniqueId;
+                }
+                if (lk.sourceId.isEmpty() && !event.id.isEmpty()) {
+                    lk.sourceId = event.id;
                 }
                 links.add(lk);
             }
@@ -627,26 +643,26 @@ public final class MessageDecoder {
     }
 
     private static void parseLinkLine(String line,
-                                       Map<String, LinkFields> linksMap,
+                                       Map<String, Linked> linksMap,
                                        Map<String, List<String>> linksBySource) {
         Map<String, String> rec = parseTabDelimited(line);
         String linkId = rec.get("_link");
         if (linkId == null || linkId.isEmpty()) return;
-        LinkFields lk = new LinkFields();
-        lk.id        = linkId;
-        lk.eventA    = rec.getOrDefault("source", "");
-        lk.eventB    = rec.getOrDefault("target", "");
-        lk.uniqueId  = rec.getOrDefault("unique_id", "");
-        lk.uniqueIdA = rec.getOrDefault("source_unique_id", "");
-        lk.uniqueIdB = rec.getOrDefault("target_unique_id", "");
-        lk.category  = rec.getOrDefault("category", "");
+        Linked lk = new Linked();
+        lk.id             = linkId;
+        lk.sourceId       = rec.getOrDefault("source", "");
+        lk.targetId       = rec.getOrDefault("target", "");
+        lk.uniqueId       = rec.getOrDefault("unique_id", "");
+        lk.sourceUniqueId = rec.getOrDefault("source_unique_id", "");
+        lk.targetUniqueId = rec.getOrDefault("target_unique_id", "");
+        lk.category       = rec.getOrDefault("category", "");
         if (rec.containsKey("strength")) {
-            try { lk.strengthB = Double.parseDouble(rec.get("strength")); }
+            try { lk.strength = Double.parseDouble(rec.get("strength")); }
             catch (NumberFormatException ignored) {}
         }
         linksMap.put(linkId, lk);
-        if (!lk.eventA.isEmpty()) {
-            linksBySource.computeIfAbsent(lk.eventA, k -> new ArrayList<>()).add(linkId);
+        if (!lk.sourceId.isEmpty()) {
+            linksBySource.computeIfAbsent(lk.sourceId, k -> new ArrayList<>()).add(linkId);
         }
     }
 
