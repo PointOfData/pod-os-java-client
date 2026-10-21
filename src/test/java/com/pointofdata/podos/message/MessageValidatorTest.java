@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 
@@ -189,5 +190,86 @@ class MessageValidatorTest {
         ValidationErrors errs = MessageValidator.validate(msg);
         assertNotNull(errs);
         assertTrue(hasRule(errs, ValidationError.RULE_SEMANTIC));
+    }
+
+    @Test
+    @DisplayName("LinkEvent rejects NaN strength and accepts a negative strength")
+    void linkEventStrengthMustBeFiniteAndNonZero() {
+        Message msg = envelopeMessage(IntentTypes.INSTANCE.LinkEvent);
+        msg.neuralMemory = new NeuralMemoryFields();
+        msg.neuralMemory.link = new LinkFields();
+        msg.neuralMemory.link.strengthA = Double.NaN;
+        msg.neuralMemory.link.strengthB = -1.0;
+        msg.neuralMemory.link.category = "related";
+
+        ValidationErrors errs = MessageValidator.validate(msg);
+        assertNotNull(errs);
+        assertTrue(hasWireField(errs, "strength_a"));
+        assertFalse(hasWireField(errs, "strength_b"));
+    }
+
+    @Test
+    @DisplayName("StoreBatchLinks encoding rejects a zero strength and writes a negative one")
+    void batchLinkStrengthEncoding() {
+        BatchLinkEventSpec zero = new BatchLinkEventSpec();
+        zero.link = new LinkFields();
+        zero.link.strengthA = 0.0;
+        zero.link.strengthB = 1.0;
+        zero.link.category = "related";
+        assertThrows(IllegalArgumentException.class,
+                () -> MessageEncoder.formatBatchLinkEventsPayload(List.of(zero)));
+
+        BatchLinkEventSpec negative = new BatchLinkEventSpec();
+        negative.link = new LinkFields();
+        negative.link.strengthA = -1.5;
+        negative.link.strengthB = Double.POSITIVE_INFINITY;
+        negative.link.category = "related";
+        assertThrows(IllegalArgumentException.class,
+                () -> MessageEncoder.formatBatchLinkEventsPayload(List.of(negative)));
+
+        negative.link.strengthB = 2.0;
+        String payload = MessageEncoder.formatBatchLinkEventsPayload(List.of(negative));
+        assertTrue(payload.contains("strength_a=-1.5"));
+        assertTrue(payload.contains("strength_b=2.0"));
+    }
+
+    @Test
+    @DisplayName("LinkEvent wire header rejects blank and non-finite strengths")
+    void linkEventWireStrength() {
+        assertTrue(hasWireField(validateLinkHeader("strength_a=NaN"), "strength_a"));
+        assertTrue(hasWireField(validateLinkHeader("strength_a="), "strength_a"));
+        assertFalse(hasWireField(validateLinkHeader("strength_a=-2.0"), "strength_a"));
+    }
+
+    private static ValidationErrors validateLinkHeader(String strengthField) {
+        String header = "_db_cmd=link\t" + strengthField
+                + "\tstrength_b=-1.0\tcategory=related\tunique_id_a=a\tunique_id_b=b"
+                + "\towner_event_id=owner\ttimestamp=+1";
+        ValidationErrors errs = MessageValidator.validateRawMessage(rawMessage(header));
+        assertNotNull(errs);
+        return errs;
+    }
+
+    private static byte[] rawMessage(String header) {
+        String to = "mem@gateway.example.com";
+        String from = "client@gateway.example.com";
+        int totalLen = 63 + to.length() + from.length() + header.length();
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("%9d", totalLen));
+        sb.append(String.format("%9d", to.length()));
+        sb.append(String.format("%9d", from.length()));
+        sb.append(String.format("%9d", header.length()));
+        sb.append(String.format("%9d", 1000));
+        sb.append(String.format("%9d", 0));
+        sb.append(String.format("%9d", 0));
+        sb.append(to).append(from).append(header);
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static boolean hasWireField(ValidationErrors errs, String wireField) {
+        for (ValidationError e : errs) {
+            if (wireField.equals(e.wireField())) return true;
+        }
+        return false;
     }
 }

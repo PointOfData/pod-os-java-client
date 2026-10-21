@@ -32,12 +32,47 @@ public class LinkFields {
     public String uniqueIdA = "";
     /** Required if eventB is not provided. */
     public String uniqueIdB = "";
-    /** Link strength A→B, required. */
+    /** Link strength A→B, required. Zero, NaN, and infinities are rejected; other positive and negative values are allowed. */
     public double strengthA;
-    /** Link strength B→A, required. */
+    /** Link strength B→A, required. Zero, NaN, and infinities are rejected; other positive and negative values are allowed. */
     public double strengthB;
     /** Link category, required. */
     public String category = "";
+
+    /**
+     * Zero, negative zero, NaN, and infinities are not stored.
+     * Other positive and negative values are allowed.
+     */
+    public static boolean strengthRejected(double value) {
+        return value == 0.0d || !Double.isFinite(value);
+    }
+
+    /**
+     * Rejects a link the actor would drop instead of saving.
+     * strengthA and strengthB must be finite and non-zero. category must be non-empty.
+     *
+     * @param lk    link to check; null is treated as missing
+     * @param where caller context included in the error message
+     * @throws IllegalArgumentException when strength or category is missing, zero, or non-finite
+     */
+    public static void requireWireFields(LinkFields lk, String where) {
+        if (lk == null) {
+            throw new IllegalArgumentException(
+                    where + ": link is missing; strength_a, strength_b, and category are required");
+        }
+        rejectStrength(lk.strengthA, where, "strength_a");
+        rejectStrength(lk.strengthB, where, "strength_b");
+        if (lk.category == null || lk.category.isEmpty()) {
+            throw new IllegalArgumentException(where + ": category is required");
+        }
+    }
+
+    private static void rejectStrength(double value, String where, String field) {
+        if (strengthRejected(value)) {
+            throw new IllegalArgumentException(
+                    where + ": " + field + " must be a finite non-zero number (positive and negative values are allowed)");
+        }
+    }
     /** Developer-defined event type string. */
     public String type = "";
     /** Owner unique ID; required if ownerID is not provided. */

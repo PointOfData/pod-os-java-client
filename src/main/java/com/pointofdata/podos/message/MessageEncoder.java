@@ -238,6 +238,7 @@ public final class MessageEncoder {
         for (int i = 0; i < events.size(); i++) {
             if (i > 0) result.append('\n');
             BatchLinkEventSpec spec = events.get(i);
+            LinkFields.requireWireFields(spec.link, "batch link " + i);
             appendEventFields(result, spec.event);
             appendLinkFields(result, spec.link);
         }
@@ -284,8 +285,8 @@ public final class MessageEncoder {
         appendField(sb, "event_id_b",   forceAscii(lk.eventB), true);
         appendField(sb, "unique_id_a",  lk.uniqueIdA,        true);
         appendField(sb, "unique_id_b",  lk.uniqueIdB,        true);
-        if (lk.strengthA != 0) appendField(sb, "strength_a", String.valueOf(lk.strengthA), true);
-        if (lk.strengthB != 0) appendField(sb, "strength_b", String.valueOf(lk.strengthB), true);
+        appendField(sb, "strength_a", String.valueOf(lk.strengthA), true);
+        appendField(sb, "strength_b", String.valueOf(lk.strengthB), true);
         appendField(sb, "category",     lk.category,         true);
         appendField(sb, "owner",        lk.owner,            true);
         appendField(sb, "timestamp",    lk.timestamp,        true);

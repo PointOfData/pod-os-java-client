@@ -349,8 +349,11 @@ public final class MessageDecoder {
         String payloadStr = getPayloadString(msg.payload);
 
         if (!payloadStr.isEmpty()) {
+            // Key by unique_id when present: links stored in one batch can share a
+            // _link event id and differ by unique_id / target / strength.
             Map<String, Linked> linkMap         = new LinkedHashMap<>();
-            Map<String, List<TagOutput>> linkTagsMap   = new HashMap<>();
+            Map<String, List<TagOutput>> linkTagsByUnique = new HashMap<>();
+            Map<String, List<TagOutput>> linkTagsById     = new HashMap<>();
             Map<String, List<TagOutput>> targetTagsMap = new HashMap<>();
 
             for (String line : payloadStr.split("\n", -1)) {
@@ -359,10 +362,15 @@ public final class MessageDecoder {
 
                 if (line.startsWith("_link=")) {
                     Linked lk = parseGetEventLinkLine(line, headerMap, msg.event);
-                    if (lk != null) linkMap.put(lk.id, lk);
+                    if (lk != null) linkMap.put(getEventLinkMapKey(lk), lk);
                 } else if (line.startsWith("_linktag\t") || line.equals("_linktag")) {
-                    Map.Entry<String, TagOutput> e = parseGetEventLinkTagLine(line);
-                    if (e != null) linkTagsMap.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).add(e.getValue());
+                    ParsedLinkTag e = parseGetEventLinkTagLine(line);
+                    if (e == null || e.tag == null) continue;
+                    if (!e.uniqueId.isEmpty()) {
+                        linkTagsByUnique.computeIfAbsent(e.uniqueId, k -> new ArrayList<>()).add(e.tag);
+                    } else if (!e.linkId.isEmpty()) {
+                        linkTagsById.computeIfAbsent(e.linkId, k -> new ArrayList<>()).add(e.tag);
+                    }
                 } else if (line.startsWith("_target_event_tag\t") || line.equals("_target_event_tag")) {
                     Map.Entry<String, TagOutput> e = parseGetEventTargetTagLine(line);
                     if (e != null) targetTagsMap.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).add(e.getValue());
@@ -370,12 +378,17 @@ public final class MessageDecoder {
                     Map<String, String> rec = parseTabDelimited(line);
                     if (rec.containsKey("_link")) {
                         Linked lk = parseGetEventLinkLine(line, headerMap, msg.event);
-                        if (lk != null) linkMap.put(lk.id, lk);
+                        if (lk != null) linkMap.put(getEventLinkMapKey(lk), lk);
                     }
                 }
             }
+            Map<String, Integer> linkIdCounts = new HashMap<>();
             for (Linked lk : linkMap.values()) {
-                lk.tags = linkTagsMap.getOrDefault(lk.id, new ArrayList<>());
+                linkIdCounts.merge(lk.id, 1, Integer::sum);
+            }
+            for (Linked lk : linkMap.values()) {
+                List<TagOutput> linkTags = getEventLinkTags(lk, linkTagsByUnique, linkTagsById, linkIdCounts);
+                if (linkTags != null) lk.tags = linkTags;
                 if (!lk.targetId.isEmpty()) {
                     lk.targetTags = targetTagsMap.getOrDefault(lk.targetId, new ArrayList<>());
                 }
@@ -412,6 +425,32 @@ public final class MessageDecoder {
         return results;
     }
 
+    /**
+     * Unique-qualified tags attach only to that viewer row.
+     * Tags that name only the link event id attach when the row has no unique id,
+     * or when it is the only row for that id. Shared event ids make those tags ambiguous.
+     */
+    private static List<TagOutput> getEventLinkTags(Linked lk,
+                                                     Map<String, List<TagOutput>> byUnique,
+                                                     Map<String, List<TagOutput>> byId,
+                                                     Map<String, Integer> linkIdCounts) {
+        List<TagOutput> uniqueTags = lk.uniqueId.isEmpty() ? null : byUnique.get(lk.uniqueId);
+        boolean onlyRow = linkIdCounts.getOrDefault(lk.id, 0) <= 1;
+        List<TagOutput> idTags = (lk.uniqueId.isEmpty() || onlyRow) ? byId.get(lk.id) : null;
+        if (uniqueTags == null) return idTags;
+        if (idTags == null) return uniqueTags;
+        List<TagOutput> merged = new ArrayList<>(uniqueTags.size() + idTags.size());
+        merged.addAll(uniqueTags);
+        merged.addAll(idTags);
+        return merged;
+    }
+
+    /** Prefer unique_id: ENM may reuse one _link event id for several viewer rows. */
+    private static String getEventLinkMapKey(Linked link) {
+        if (link.uniqueId != null && !link.uniqueId.isEmpty()) return "u:" + link.uniqueId;
+        return "i:" + link.id;
+    }
+
     private static Linked parseGetEventLinkLine(String line, Map<String, String> headerMap, EventFields request) {
         Map<String, String> rec = parseTabDelimited(line);
         String linkId = rec.get("_link");
@@ -443,12 +482,26 @@ public final class MessageDecoder {
         return lk;
     }
 
-    private static Map.Entry<String, TagOutput> parseGetEventLinkTagLine(String line) {
+    /** GetEvent _linktag row: event_id is the shared link event id; unique selects the row. */
+    private static final class ParsedLinkTag {
+        final String linkId;
+        final String uniqueId;
+        final TagOutput tag;
+
+        ParsedLinkTag(String linkId, String uniqueId, TagOutput tag) {
+            this.linkId = linkId;
+            this.uniqueId = uniqueId;
+            this.tag = tag;
+        }
+    }
+
+    private static ParsedLinkTag parseGetEventLinkTagLine(String line) {
         Map<String, String> rec = parseTabDelimited(line);
-        String linkId = rec.get("event_id");
-        if (linkId == null || linkId.isEmpty()) return null;
+        String linkId = rec.getOrDefault("event_id", "");
+        String uniqueId = rec.getOrDefault("unique", "");
+        if (linkId.isEmpty() && uniqueId.isEmpty()) return null;
         TagOutput tag = parseTagFromRecord(rec);
-        return tag == null ? null : new AbstractMap.SimpleImmutableEntry<>(linkId, tag);
+        return tag == null ? null : new ParsedLinkTag(linkId, uniqueId, tag);
     }
 
     private static Map.Entry<String, TagOutput> parseGetEventTargetTagLine(String line) {
@@ -536,10 +589,14 @@ public final class MessageDecoder {
             }
             List<String> linkIds = linksBySource.getOrDefault(eventId, new ArrayList<>());
             List<Linked> links = new ArrayList<>(linkIds.size());
-            for (String linkId : linkIds) {
-                Linked lk = linksMap.get(linkId);
+            for (String mapKey : linkIds) {
+                Linked lk = linksMap.get(mapKey);
                 if (lk == null) continue;
-                lk.tags = linkTagsMap.getOrDefault(linkId, new ArrayList<>());
+                // GFT _linktag= is keyed by link event id, which several rows may share.
+                // Copy so sibling rows do not alias one mutable list.
+                List<TagOutput> linkTags = linkTagsMap.get(lk.id);
+                if (linkTags == null) linkTags = linkTagsMap.get(mapKey);
+                if (linkTags != null) lk.tags = new ArrayList<>(linkTags);
                 if (!lk.targetId.isEmpty()) {
                     lk.targetTags = targetTagsMap.getOrDefault(lk.targetId, new ArrayList<>());
                 }
@@ -660,9 +717,12 @@ public final class MessageDecoder {
             try { lk.strength = Double.parseDouble(rec.get("strength")); }
             catch (NumberFormatException ignored) {}
         }
-        linksMap.put(linkId, lk);
+        // Prefer unique_id: ENM may reuse one _link event id for both viewer rows.
+        String mapKey = linkId;
+        if (!lk.uniqueId.isEmpty()) mapKey = "u:" + lk.uniqueId;
+        linksMap.put(mapKey, lk);
         if (!lk.sourceId.isEmpty()) {
-            linksBySource.computeIfAbsent(lk.sourceId, k -> new ArrayList<>()).add(linkId);
+            linksBySource.computeIfAbsent(lk.sourceId, k -> new ArrayList<>()).add(mapKey);
         }
     }
 

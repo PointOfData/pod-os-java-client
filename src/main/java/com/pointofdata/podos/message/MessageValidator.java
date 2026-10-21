@@ -969,6 +969,10 @@ public final class MessageValidator {
                     "spec.link.category = \"related\"",
                     "message/LinkFields.java:category"));
         }
+        requireField(errs, intent, prefix + ".Link.StrengthA", "strength_a", lk.strengthA,
+                "spec.link.strengthA = 1.0", "message/LinkFields.java:strengthA");
+        requireField(errs, intent, prefix + ".Link.StrengthB", "strength_b", lk.strengthB,
+                "spec.link.strengthB = 1.0", "message/LinkFields.java:strengthB");
         if (isEmpty(lk.ownerId) && isEmpty(lk.ownerUniqueId)) {
             errs.add(err(intent, prefix + ".Link.OwnerId / OwnerUniqueID",
                     "owner_event_id / owner_unique_id", RULE_PAYLOAD_FORMAT,
@@ -1131,6 +1135,15 @@ public final class MessageValidator {
                 requireWireField(errs, intent, "strength_a", null, hm);
                 requireWireField(errs, intent, "strength_b", null, hm);
                 requireWireField(errs, intent, "category", null, hm);
+                requireNonZeroWireStrength(errs, intent, "strength_a", hm);
+                requireNonZeroWireStrength(errs, intent, "strength_b", hm);
+                if (hm.containsKey("category") && isEmpty(hm.get("category"))) {
+                    errs.add(err("RawMessage", "header.category", "category", RULE_HEADER_MISSING,
+                            "Header 'category' is required for " + intent + ".",
+                            "Set msg.neuralMemory.link.category to a non-empty string.",
+                            "msg.neuralMemory.link.category = \"related\"",
+                            "message/HeaderBuilder.java"));
+                }
                 requireWireFieldOneOf(errs, intent, hm, "unique_id_a", "event_id_a");
                 requireWireFieldOneOf(errs, intent, hm, "owner_event_id", "owner_unique_id");
                 requireWireField(errs, intent, "timestamp", null, hm);
@@ -1345,10 +1358,37 @@ public final class MessageValidator {
     private static void requireField(List<ValidationError> errs, String intent,
                                       String field, String wireField, double value,
                                       String exampleCode, String ref) {
-        // Strengths of 0.0 are valid only if explicitly set; for required fields
-        // we only flag this if there's no other indication the field was set.
-        // Since Java doubles default to 0.0, we treat 0.0 as "not set" for
-        // required strength fields.
+        // Java doubles default to 0.0, which the actor treats as unset and drops.
+        // NaN and infinities are not usable weights. Other positive and negative values are valid.
+        if (LinkFields.strengthRejected(value)) {
+            errs.add(err(intent, field, wireField, RULE_REQUIRED,
+                    wireField + " must be a finite non-zero number (positive and negative values are allowed).",
+                    "Set a finite non-zero strength such as 1.0 or -1.0.",
+                    exampleCode,
+                    ref));
+        }
+    }
+
+    private static void requireNonZeroWireStrength(List<ValidationError> errs, String intent,
+                                                    String wireField, Map<String, String> hm) {
+        String value = hm.get(wireField);
+        if (value == null || !wireStrengthRejected(value)) return;
+        errs.add(err("RawMessage", "header." + wireField, wireField, RULE_HEADER_VALUE,
+                wireField + " must be a finite non-zero number (positive and negative values are allowed).",
+                "Set a finite non-zero strength such as 1.0 or -1.0.",
+                "msg.neuralMemory.link." + wireField + " = 1.0",
+                "message/HeaderBuilder.java"));
+    }
+
+    /** Blank, zero, NaN, and infinities are rejected. Non-numeric text is left to the actor. */
+    private static boolean wireStrengthRejected(String raw) {
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) return true;
+        try {
+            return LinkFields.strengthRejected(Double.parseDouble(trimmed));
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
     }
 
     private static void requireWireField(List<ValidationError> errs, String intent,

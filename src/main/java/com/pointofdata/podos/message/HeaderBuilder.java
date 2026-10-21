@@ -367,6 +367,7 @@ public final class HeaderBuilder {
         if (notEmpty(msg.messageId)) h.append("_msg_id=").append(msg.messageId).append('\t');
 
         LinkFields lk = msg.link();
+        LinkFields.requireWireFields(lk, "LinkEvent");
         if (lk != null) {
             if (notEmpty(lk.uniqueIdA) && notEmpty(lk.uniqueIdB)) {
                 h.append("unique_id_a=").append(lk.uniqueIdA).append('\t');
