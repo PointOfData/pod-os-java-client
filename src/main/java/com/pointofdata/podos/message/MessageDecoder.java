@@ -518,6 +518,9 @@ public final class MessageDecoder {
             try { tag.frequency = Integer.parseInt(rec.get("freq")); }
             catch (NumberFormatException ignored) {}
         }
+        if (rec.containsKey("timestamp")) {
+            tag.timestamp = rec.get("timestamp");
+        }
         String val = rec.get("value");
         if (val != null) {
             int eq = val.indexOf('=');

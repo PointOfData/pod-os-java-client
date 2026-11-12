@@ -234,6 +234,31 @@ class MessageValidatorTest {
     }
 
     @Test
+    @DisplayName("StoreBatchLinks payload emits owner_event_id")
+    void batchLinkPayloadEmitsOwnerEventId() {
+        BatchLinkEventSpec spec = new BatchLinkEventSpec();
+        spec.event.uniqueId = "lk1";
+        spec.link = new LinkFields();
+        spec.link.uniqueIdA = "a";
+        spec.link.uniqueIdB = "b";
+        spec.link.strengthA = 0.8;
+        spec.link.strengthB = 0.2;
+        spec.link.category = "related";
+        spec.link.ownerId = "$sys";
+        spec.link.timestamp = "+1";
+        spec.link.location = "TERRA|0|0|0";
+        spec.link.locationSeparator = "|";
+        String payload = MessageEncoder.formatBatchLinkEventsPayload(List.of(spec));
+        assertTrue(payload.contains("unique_id=lk1"));
+        assertTrue(payload.contains("owner_event_id=$sys"));
+        assertTrue(payload.contains("timestamp=+1"));
+        assertTrue(payload.contains("loc=TERRA|0|0|0"));
+        assertTrue(payload.contains("loc_delim=|"));
+        assertTrue(payload.startsWith("unique_id=lk1\t"));
+        assertFalse(payload.contains("\tunique_id="));
+    }
+
+    @Test
     @DisplayName("LinkEvent wire header rejects blank and non-finite strengths")
     void linkEventWireStrength() {
         assertTrue(hasWireField(validateLinkHeader("strength_a=NaN"), "strength_a"));

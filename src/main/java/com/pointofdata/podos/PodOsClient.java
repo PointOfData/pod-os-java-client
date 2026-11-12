@@ -12,6 +12,8 @@ import com.pointofdata.podos.message.*;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
@@ -345,6 +347,49 @@ public class PodOsClient implements AutoCloseable {
      * @return decoded response message
      * @throws IOException if encoding, sending, receiving, or decoding fails
      */
+    /**
+     * Writes one StoreBatchTags of caller-named keys onto an existing event.
+     * Every tag is sent with frequency 1. The batch owner unique id is the target.
+     * A repeated value is a new observation and is written.
+     *
+     * @param actor          recipient routing identity (name@gateway)
+     * @param targetUniqueId event that owns the tags
+     * @param tags           keys and values to append
+     * @param timeout        response timeout (null uses the client default)
+     */
+    public TagHistory.AppendResult appendTags(String actor, String targetUniqueId, List<Tag> tags,
+                                               Duration timeout) throws IOException {
+        if (actor == null || actor.isEmpty()) {
+            throw new IOException("actor is required");
+        }
+        if (targetUniqueId == null || targetUniqueId.isEmpty()) {
+            throw new IOException("target unique id is required");
+        }
+        if (tags == null || tags.isEmpty()) {
+            throw new IOException("tags are required");
+        }
+
+        List<Tag> stored = new ArrayList<>(tags.size());
+        for (Tag tag : tags) {
+            Tag copy = new Tag(1, tag.key, tag.value);
+            copy.timestamp = tag.timestamp;
+            copy.id = tag.id;
+            copy.owner = tag.owner;
+            copy.ownerUniqueId = tag.ownerUniqueId;
+            stored.add(copy);
+        }
+        Message store = new Message();
+        store.to = actor;
+        store.intent = IntentTypes.INSTANCE.StoreBatchTags;
+        store.event = new EventFields();
+        store.event.uniqueId = targetUniqueId;
+        store.event.ownerUniqueId = targetUniqueId;
+        store.neuralMemory = new NeuralMemoryFields();
+        store.neuralMemory.tags = stored;
+        sendMessage(store, timeout);
+        return new TagHistory.AppendResult(true);
+    }
+
     public Message sendMessage(Message msg, Duration timeout) throws IOException {
         normalizeMessage(msg);
         Duration effectiveTimeout = timeout != null ? timeout : cfg.responseTimeout;

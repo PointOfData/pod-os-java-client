@@ -177,6 +177,8 @@ EventUniqueId=550e8400-e29b-41d4-a716-446655440001	EventOwner=$sys	EventTimestam
 The text payload contains newline-terminated records formatted as `frequency=tagvalue`.
 Facets use: `frequency=key_name=key_value`.
 
+A later write of the same key appends a version. The default read is the latest value of each key. Prior rows remain and are returned with `tagFormat = 1` (GetEvent) or `bufferFormat = "1"` (GetEventsForTags). Order is storage timestamp, then tag number.
+
 ```java
 Message msg = new Message();
 msg.to         = "administration@" + domainName;

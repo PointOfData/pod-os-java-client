@@ -280,7 +280,6 @@ public final class MessageEncoder {
 
     private static void appendLinkFields(StringBuilder sb, LinkFields lk) {
         if (lk == null) return;
-        appendField(sb, "unique_id",    lk.uniqueId,         true);
         appendField(sb, "event_id_a",   forceAscii(lk.eventA), true);
         appendField(sb, "event_id_b",   forceAscii(lk.eventB), true);
         appendField(sb, "unique_id_a",  lk.uniqueIdA,        true);
@@ -289,7 +288,11 @@ public final class MessageEncoder {
         appendField(sb, "strength_b", String.valueOf(lk.strengthB), true);
         appendField(sb, "category",     lk.category,         true);
         appendField(sb, "owner",        lk.owner,            true);
+        appendField(sb, "owner_event_id", lk.ownerId,        true);
+        appendField(sb, "owner_unique_id", lk.ownerUniqueId, true);
         appendField(sb, "timestamp",    lk.timestamp,        true);
+        appendField(sb, "loc",          lk.location,         true);
+        appendField(sb, "loc_delim",    lk.locationSeparator, true);
     }
 
     private static void appendField(StringBuilder sb, String key, String value, boolean tab) {
